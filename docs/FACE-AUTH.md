@@ -75,6 +75,26 @@ files. Look at them, then delete them — they are pictures of your face.
 Note that `visage test` defaults to `/dev/video2` and ignores the
 environment variable the daemon uses, so pass `-d` explicitly.
 
+## Settings
+
+There is no GUI and no configuration file. Everything is environment
+variables on the daemon, so put them in the systemd drop-in:
+
+| variable | meaning |
+|---|---|
+| `VISAGE_CAMERA_DEVICE` | which camera to use |
+| `VISAGE_SIMILARITY_THRESHOLD` | how strict a match must be (default 0.40, higher is stricter) |
+| `VISAGE_VERIFY_TIMEOUT_SECS` | how long to wait for a face (default 10) |
+| `VISAGE_FRAMES_PER_VERIFY` | frames examined per attempt |
+| `VISAGE_FRAMES_PER_ENROLL` | frames examined when enrolling |
+| `VISAGE_WARMUP_FRAMES` | frames discarded at stream start |
+| `VISAGE_LIVENESS_ENABLED` | anti-spoofing, **off by default** |
+| `VISAGE_EMITTER_ENABLED` | visage's own UVC emitter control; keep off here |
+
+Worth deciding deliberately: with liveness detection off, an infrared
+photograph of your face would in principle pass. Turning it on costs time
+per authentication.
+
 ## Enrolling
 
 This has to be done by the person being enrolled, sitting in front of the
@@ -126,7 +146,29 @@ enabling through the `led_mode` control:
 v4l2-ctl -d /dev/v4l-subdevN --set-ctrl=led_mode=1
 ```
 
-Measured, twice: mean brightness 16 with it off, 86 with it on.
+Measured, twice: mean brightness 16 with it off, 86 with it on. Digital
+gain also drops from 8x back to 1x, which matters more for recognition
+than the brightness figure does.
+
+### Trading frame rate for a cleaner picture
+
+With the illuminator on, the driver halves the exposure ceiling —
+`limit_flash_duty_cycle` in the VD55G0 driver — so that the strobe duty
+cycle stays at or below half and the LED does not overheat. Do not defeat
+that. But a longer frame gives a higher ceiling at the same duty cycle,
+which is free:
+
+| frame rate | exposure used | analogue gain |
+|---|---|---|
+| ~62 fps (default) | 875 of 898 | 6 |
+| **~31 fps** | 1005 of 1820 | **0** |
+| ~21 fps | 968 of 2770 | 0 |
+
+At about 31 fps the sensor no longer needs analogue gain at all, so the
+image is cleaner. Below that there is nothing more to gain. 31 fps is
+ample for face recognition, so `ir-setup.sh` sets `vertical_blanking` to
+3100 by default; override with `IR_VBLANK` if you want the frame rate
+back.
 
 **It must be set before the stream starts.** The sensor latches its GPIO
 configuration at stream start, and the same control set on an already
