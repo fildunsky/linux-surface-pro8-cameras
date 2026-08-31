@@ -1,0 +1,15 @@
+# Proprietary calibration and driver blobs — never commit these
+*.aiqb
+*.sys
+*.inf
+*.bin
+factory-tuning/
+windows-driver/
+
+# Build output
+*.o
+*.ko
+*.mod*
+.tmp_versions/
+Module.symvers
+modules.order

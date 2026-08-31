@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Мост ИК-камеры Surface Pro 8 в V4L2, включающийся по требованию.
+
+Пока камера снимает, она запитана и горит диод приватности, поэтому
+держать её открытой постоянно нельзя. Устроено так же, как v4l2-relayd
+для цветных камер: устройство всегда на месте и всегда отдаёт кадры, но
+до прихода потребителя это чёрная заставка, а сенсор обесточен.
+
+Почему нужна заставка. v4l2loopback не отдаёт сторону захвата, пока
+устройство не держит писатель с выставленным форматом: попытка чтения
+даёт "unsupported stream type". Формат не переживает уход писателя, а
+ffmpeg выставляет его, только получив первый кадр. Значит кто-то обязан
+писать всегда — иначе потребитель не сможет даже открыть устройство, и
+событию об открытии неоткуда взяться. Вхолостую это два кадра в секунду,
+меньше процента ядра.
+
+Как узнаём об открытии: событие v4l2loopback V4L2_EVENT_PRI_CLIENT_USAGE.
+Его тип — 0x10E00001, а НЕ V4L2_EVENT_PRIVATE_START + 1, как можно
+подумать по названию: в v4l2loopback.c к базе прибавлено собственное
+смещение 0x08E00000. Второй код, 0x08000000, — для убунтовского патча;
+подписываемся на оба, работает тот, который примут.
+
+Писатель здесь ровно один — вот этот процесс. Данные с камеры он
+переливает в ffmpeg сам, а не отдаёт ffmpeg отдельным процессом, чтобы
+при переключении заставка и камера не писали в один поток вперемешку.
+"""
+import fcntl
+import glob
+import os
+import select
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+EVENTS = (0x10E00001, 0x08000000)
+VIDIOC_SUBSCRIBE_EVENT = 0x4020565A
+# _IOR('V', 89, struct v4l2_event). Размер структуры 136, а не 128: в
+# объединении есть v4l2_event_ctrl с полем __s64, из-за чего объединение
+# выровнено на 8 байт, и после type появляется четырёхбайтовая дырка.
+VIDIOC_DQEVENT = 0x80885659
+# Поэтому же счётчик клиентов лежит по смещению 8, а не сразу за type.
+COUNT_OFFSET = 8
+
+SETUP = "/usr/local/lib/surface-ir-setup.sh"
+CAPTURE = os.environ.get("IR_CAPTURE", "/dev/video42")
+CARD = "Surface Camera IR"
+W, H, STRIDE_PX, FPS = 644, 604, 672, 50
+IDLE_FPS = 2
+FRAME = STRIDE_PX * H * 2          # gray10le, два байта на пиксель
+BLACK = bytes(FRAME)
+
+
+def loopback_node():
+    for p in glob.glob("/sys/devices/virtual/video4linux/*/name"):
+        if open(p).read().strip() == CARD:
+            return "/dev/" + os.path.basename(os.path.dirname(p))
+    sys.exit(f"нет узла с меткой карты '{CARD}'")
+
+
+class Bridge:
+    def __init__(self, dev):
+        self.dev = dev
+        self.camera = None
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.ffmpeg = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "rawvideo", "-pix_fmt", "gray10le",
+             "-s", f"{STRIDE_PX}x{H}", "-r", str(FPS), "-i", "pipe:0",
+             "-vf", f"crop={W}:{H}:0:0",
+             "-f", "v4l2", "-pix_fmt", "yuyv422", dev],
+            stdin=subprocess.PIPE)
+        self.out = self.ffmpeg.stdin
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def pump(self):
+        """Единственный писатель: либо заставка, либо кадры с камеры."""
+        while not self.stop.is_set():
+            with self.lock:
+                cam = self.camera
+            if cam is None:
+                try:
+                    self.out.write(BLACK)
+                    self.out.flush()
+                except (BrokenPipeError, ValueError):
+                    return
+                time.sleep(1.0 / IDLE_FPS)
+                continue
+            chunk = cam.stdout.read(65536)
+            if not chunk:
+                # камера отвалилась сама — вернуться к заставке
+                with self.lock:
+                    if self.camera is cam:
+                        self.camera = None
+                continue
+            try:
+                self.out.write(chunk)
+            except (BrokenPipeError, ValueError):
+                return
+
+    def start_camera(self):
+        with self.lock:
+            if self.camera:
+                return
+        subprocess.run([SETUP], stdout=subprocess.DEVNULL, check=True)
+        proc = subprocess.Popen(
+            ["v4l2-ctl", "-d", CAPTURE, "--stream-mmap", "--stream-to=-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        with self.lock:
+            self.camera = proc
+        print("ИК: потребитель пришёл, камера включена", flush=True)
+
+    def stop_camera(self):
+        with self.lock:
+            proc, self.camera = self.camera, None
+        if not proc:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        print("ИК: потребителей нет, камера обесточена", flush=True)
+
+    def shutdown(self):
+        self.stop.set()
+        self.stop_camera()
+        try:
+            self.out.close()
+        except Exception:
+            pass
+        self.ffmpeg.terminate()
+
+
+def main():
+    dev = loopback_node()
+    bridge = Bridge(dev)
+
+    def bye(*_):
+        bridge.shutdown()
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+
+    fd = os.open(dev, os.O_RDWR)
+    subscribed = []
+    for et in EVENTS:
+        try:
+            fcntl.ioctl(fd, VIDIOC_SUBSCRIBE_EVENT,
+                        struct.pack("=III5I", et, 0, 0, *([0] * 5)))
+            subscribed.append(et)
+        except OSError:
+            pass
+    if not subscribed:
+        bridge.shutdown()
+        sys.exit("v4l2loopback не отдаёт событие об открытии устройства")
+
+    print(f"ИК: жду потребителей на {dev}", flush=True)
+    poller = select.poll()
+    poller.register(fd, select.POLLPRI)
+    while True:
+        if not poller.poll(2000):
+            if bridge.ffmpeg.poll() is not None:
+                sys.exit("ffmpeg завершился, перезапуск через systemd")
+            continue
+        buf = bytearray(136)
+        try:
+            fcntl.ioctl(fd, VIDIOC_DQEVENT, buf)
+        except OSError:
+            continue
+        etype = struct.unpack_from("=I", buf, 0)[0]
+        count = struct.unpack_from("=I", buf, COUNT_OFFSET)[0]
+        if etype not in subscribed:
+            continue
+        if count:
+            bridge.start_camera()
+        else:
+            bridge.stop_camera()
+
+
+if __name__ == "__main__":
+    main()

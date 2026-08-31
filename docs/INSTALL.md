@@ -1,0 +1,111 @@
+# Installing
+
+Tested on Ubuntu 26.04, kernel 6.19.8-surface-3, with the linux-surface
+kernel already in place. Secure Boot is fine: DKMS signs modules with your
+enrolled MOK.
+
+Nothing here is a one-click installer on purpose. Each piece is
+independent, and you probably do not want all of them.
+
+## 1. Kernel drivers
+
+Each `driver-*` directory is a DKMS package. Install the ones you need:
+
+```sh
+sudo cp -r driver-ov5693  /usr/src/ov5693-1.1-surface-ipu6
+sudo dkms install ov5693/1.1-surface-ipu6
+```
+
+and likewise for `driver-ov13858` and `driver-ipu6`.
+
+`driver-ipu6` rebuilds three modules together — `ipu-bridge`,
+`intel-ipu6` and `intel-ipu6-isys`. That is not laziness: `intel_ipu6`
+links against symbols exported by `ipu-bridge`, and with
+`CONFIG_MODVERSIONS` building only the bridge out of tree gives different
+checksums, so the kernel rejects it with `disagrees about version of
+symbol ipu_bridge_init`.
+
+`intel_ipu6` cannot be unloaded on a live system, so changes to
+`driver-ipu6` only take effect after a reboot.
+
+For the IR sensor use [linux-surface/kernel#169](https://github.com/linux-surface/kernel/pull/169)
+directly rather than anything here, and put the firmware from
+[petm5/vd55g-firmware](https://github.com/petm5/vd55g-firmware) into
+`/lib/firmware`.
+
+## 2. libcamera
+
+The patches in `patches/libcamera/` apply to libcamera 0.7.0. Order in
+`debian/patches/series` matters — later patches build on earlier ones:
+
+```
+softisp-agc-proportional.patch
+softisp-fix-black-level-order.patch
+softisp-split-awb-from-ccm.patch
+softisp-awb-use-libipa-bayes.patch
+softisp-stats-sums-to-8bit.patch
+```
+
+On Ubuntu, `deb-src` is disabled by default, so enable it first:
+
+```sh
+sudo tee /etc/apt/sources.list.d/libcamera-src.sources <<'EOF'
+Types: deb-src
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: resolute resolute-updates
+Components: main universe
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+sudo apt-get update
+apt-get source libcamera
+sudo apt-get build-dep -y libcamera
+
+cd libcamera-0.7.0
+cp ../../patches/libcamera/softisp-*.patch debian/patches/
+# append the five names above to debian/patches/series, in that order
+dpkg-buildpackage -b -uc -us -j"$(nproc)"
+
+cd ..
+sudo dpkg -i libcamera0.7_*_amd64.deb libcamera-ipa_*_amd64.deb \
+             gstreamer1.0-libcamera_*_amd64.deb
+sudo apt-mark hold libcamera0.7 libcamera-ipa gstreamer1.0-libcamera
+```
+
+Two things that will bite you:
+
+* `libcamera0.7` and `libcamera-ipa` must be installed **together**. IPA
+  modules are signed with a key generated at build time and libcamera
+  verifies the signature, so a mismatched pair silently refuses to load.
+* `apt-mark hold` is not optional. The next distribution update will
+  otherwise replace your build and bring all the defects back.
+
+## 3. Tuning files
+
+```sh
+sudo cp tuning/*.yaml /usr/share/libcamera/ipa/simple/
+```
+
+These are derived from *our* camera modules' factory calibration. Colour
+calibration is per-module, so for best results regenerate them from your
+own device's `.aiqb` files with `tools/factory-tuning.py`.
+
+## 4. V4L2 bridging for applications
+
+Chrome, Zoom and most other applications speak V4L2 and cannot see
+libcamera devices, so each camera is exposed through a `v4l2loopback`
+node. See `relayd/README` for the colour cameras.
+
+The IR camera does not go through v4l2-relayd, because GStreamer's
+`v4l2src` cannot negotiate the `Y10 ` format and fails with
+`not-negotiated (-4)`. It uses its own bridge instead — see
+`tools/README-ir.md`.
+
+## Checking that it worked
+
+```sh
+# all three cameras enumerated by libcamera
+gst-launch-1.0 libcamerasrc ! fakesink 2>&1 | grep 'Adding camera'
+
+# a frame from the IR camera
+sudo tools/ir-grab.sh 5 /tmp/ir && xdg-open /tmp/ir/ir_001.png
+```

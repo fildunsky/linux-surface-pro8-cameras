@@ -1,0 +1,69 @@
+diff --git a/src/v4l2-relayd.c b/src/v4l2-relayd.c
+index 6e7d6de..bb78fd9 100644
+--- a/src/v4l2-relayd.c
++++ b/src/v4l2-relayd.c
+@@ -273,10 +273,40 @@ splash_pipeline_get ()
+   return splash_pipeline;
+ }
+ 
++/*
++ * Выровнять базу времени подчинённого конвейера с выходным.
++ *
++ * backend_pipeline_create() делает это один раз при создании и ставит
++ * start_time в GST_CLOCK_TIME_NONE, чтобы база пережила смену состояний.
++ * Но входной конвейер и заставка многократно переводятся в GST_STATE_NULL и
++ * обратно, и база при этом теряется. Дальше живой источник считает метки
++ * времени от новой базы, то есть заново от нуля, а выходной конвейер живёт со
++ * своей исходной. Расхождение равно времени работы демона и растёт без
++ * предела: приёмник считает все кадры камеры опоздавшими и выбрасывает их,
++ * потребитель получает одну заставку.
++ *
++ * Замерено на Surface Pro 8 (libcamerasrc, IPU6): сразу после запуска службы
++ * приходит 173 живых кадра за 6 секунд, через 25 минут работы — ноль живых и
++ * 784 кадра заставки в секунду.
++ *
++ * Поэтому выравниваем базу перед каждым включением, а не только при создании.
++ */
++static void
++backend_pipeline_sync_base_time (GstElement *pipeline)
++{
++  if (pipeline == NULL || output_pipeline == NULL)
++    return;
++
++  gst_element_set_base_time (pipeline,
++                             gst_element_get_base_time (output_pipeline));
++  gst_element_set_start_time (pipeline, GST_CLOCK_TIME_NONE);
++}
++
+ static void
+ input_pipeline_enable ()
+ {
+   gst_element_set_state (splash_pipeline_get (), GST_STATE_NULL);
++  backend_pipeline_sync_base_time (input_pipeline_get ());
+   gst_element_set_state (input_pipeline_get (), GST_STATE_PLAYING);
+ }
+ 
+@@ -285,8 +315,10 @@ input_pipeline_disable ()
+ {
+   if (input_pipeline != NULL)
+     gst_element_set_state (input_pipeline, GST_STATE_NULL);
+-  if (input_pipeline != NULL)
++  if (input_pipeline != NULL) {
++    backend_pipeline_sync_base_time (splash_pipeline);
+     gst_element_set_state (splash_pipeline, GST_STATE_PLAYING);
++  }
+ }
+ 
+ static gboolean
+@@ -359,8 +391,10 @@ output_pipeline_bus_call (GstBus     *bus,
+         break;
+       }
+ 
+-      if (old_state == GST_STATE_READY && new_state == GST_STATE_PAUSED)
++      if (old_state == GST_STATE_READY && new_state == GST_STATE_PAUSED) {
++        backend_pipeline_sync_base_time (splash_pipeline_get ());
+         gst_element_set_state (splash_pipeline_get (), GST_STATE_PLAYING);
++      }
+ 
+       if (new_state != GST_STATE_PLAYING)
+         break;

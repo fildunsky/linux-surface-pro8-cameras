@@ -1,0 +1,174 @@
+Description: softisp: Split AWB from Combined Matrix
+ Backport of upstream libcamera commit 569e3a41e9e46e3577942ea84951b98b26b79867.
+ AWB gains and the CCM were folded into a single matrix, so a clipped white
+ pixel was multiplied by CCM * diag(gains) whose rows no longer sum to 1;
+ channels then saturate unevenly and the brightest highlights come out
+ tinted. On the Surface Pro 8 front camera (OV5693, factory CCM, gains
+ R=1.29 G=1.00 B=1.66) white clipped to RGB(255, 189, 255), i.e. pink.
+ The gains are now a separate stage, clamped equally on all channels before
+ the CCM. Rewritten by hand for 0.7.0: Vector::clamp() does not exist here,
+ and 0.7.0's shaders subtract the black level without normalising.
+Origin: upstream, https://git.libcamera.org/libcamera/libcamera.git/commit/?id=569e3a41e9e46e3577942ea84951b98b26b79867
+Author: Kieran Bingham <kieran.bingham@ideasonboard.com>
+--- libcamera-0.7.0.orig/src/ipa/simple/algorithms/awb.cpp
++++ libcamera-0.7.0/src/ipa/simple/algorithms/awb.cpp
+@@ -40,15 +40,8 @@ void Awb::prepare(IPAContext &context,
+ 		  DebayerParams *params)
+ {
+ 	auto &gains = context.activeState.awb.gains;
+-	Matrix<float, 3, 3> gainMatrix = { { gains.r(), 0, 0,
+-					     0, gains.g(), 0,
+-					     0, 0, gains.b() } };
+-	context.activeState.combinedMatrix =
+-		context.activeState.combinedMatrix * gainMatrix;
+-
+-	frameContext.gains.red = gains.r();
+-	frameContext.gains.blue = gains.b();
+ 
++	frameContext.gains = gains;
+ 	params->gains = gains;
+ }
+ 
+@@ -61,10 +54,8 @@ void Awb::process(IPAContext &context,
+ 	const SwIspStats::Histogram &histogram = stats->yHistogram;
+ 	const uint8_t blackLevel = context.activeState.blc.level;
+ 
+-	const float mdGains[] = {
+-		static_cast<float>(frameContext.gains.red),
+-		static_cast<float>(frameContext.gains.blue)
+-	};
++	const float mdGains[] = { frameContext.gains.r(),
++				  frameContext.gains.b() };
+ 	metadata.set(controls::ColourGains, mdGains);
+ 
+ 	if (!stats->valid)
+--- libcamera-0.7.0.orig/src/ipa/simple/ipa_context.h
++++ libcamera-0.7.0/src/ipa/simple/ipa_context.h
+@@ -71,10 +71,7 @@ struct IPAFrameContext : public FrameCon
+ 		double gain;
+ 	} sensor;
+ 
+-	struct {
+-		double red;
+-		double blue;
+-	} gains;
++	RGB<float> gains;
+ 
+ 	float gamma;
+ 	std::optional<float> contrast;
+--- libcamera-0.7.0.orig/src/libcamera/shaders/bayer_1x_packed.frag
++++ libcamera-0.7.0/src/libcamera/shaders/bayer_1x_packed.frag
+@@ -65,6 +65,7 @@ uniform vec2 tex_step;
+ uniform vec2 tex_bayer_first_red;
+ 
+ uniform sampler2D tex_y;
++uniform vec3 awb;
+ uniform mat3 ccm;
+ uniform vec3 blacklevel;
+ uniform float gamma;
+@@ -227,6 +228,9 @@ void main(void)
+ 
+ 	rgb = rgb - blacklevel;
+ 
++	/* Apply AWB gains, and saturate each channel at sensor range */
++	rgb = clamp(rgb * awb, vec3(0.0), vec3(1.0));
++
+ 	/*
+ 	 *   CCM is a 3x3 in the format
+ 	 *
+--- libcamera-0.7.0.orig/src/libcamera/shaders/bayer_unpacked.frag
++++ libcamera-0.7.0/src/libcamera/shaders/bayer_unpacked.frag
+@@ -24,6 +24,7 @@ uniform sampler2D       tex_y;
+ varying vec4            center;
+ varying vec4            yCoord;
+ varying vec4            xCoord;
++uniform vec3            awb;
+ uniform mat3            ccm;
+ uniform vec3            blacklevel;
+ uniform float           gamma;
+@@ -130,6 +131,9 @@ void main(void) {
+ 
+     rgb = rgb - blacklevel;
+ 
++    /* Apply AWB gains, and saturate each channel at sensor range */
++    rgb = clamp(rgb * awb, vec3(0.0), vec3(1.0));
++
+     /*
+      *   CCM is a 3x3 in the format
+      *
+--- libcamera-0.7.0.orig/src/libcamera/software_isp/debayer_cpu.cpp
++++ libcamera-0.7.0/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -786,11 +786,13 @@ void DebayerCpu::updateLookupTables(Deba
+ 	const unsigned int gammaTableSize = gammaTable_.size();
+ 
+ 	const RGB<float> blackIndex = params.blackLevel * kRGBLookupSize;
++	const RGB<float> gains = params.gains;
+ 	const RGB<float> div = (RGB<float>(kRGBLookupSize) - blackIndex).max(1.0f);
+ 
+ 	if (ccmEnabled_) {
+ 		if (gammaUpdateNeeded ||
+-		    matrixChanged(params.combinedMatrix, params_.combinedMatrix)) {
++		    matrixChanged(params.combinedMatrix, params_.combinedMatrix) ||
++		    params.gains != params_.gains) {
+ 			auto &red = swapRedBlueGains_ ? blueCcm_ : redCcm_;
+ 			auto &green = greenCcm_;
+ 			auto &blue = swapRedBlueGains_ ? redCcm_ : blueCcm_;
+@@ -799,7 +801,9 @@ void DebayerCpu::updateLookupTables(Deba
+ 			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+ 				const RGB<float> rgb =
+-					((RGB<float>(i) - blackIndex) * kRGBLookupSize / div).max(0.0f);
++					(gains * (RGB<float>(i) - blackIndex) * kRGBLookupSize / div)
++						.max(0.0f)
++						.min(kRGBLookupSize - 1.0f);
+ 				red[i].r = std::round(rgb.r() * params.combinedMatrix[redIndex][0]);
+ 				red[i].g = std::round(rgb.r() * params.combinedMatrix[greenIndex][0]);
+ 				red[i].b = std::round(rgb.r() * params.combinedMatrix[blueIndex][0]);
+@@ -814,7 +818,6 @@ void DebayerCpu::updateLookupTables(Deba
+ 		}
+ 	} else {
+ 		if (gammaUpdateNeeded || params.gains != params_.gains) {
+-			auto &gains = params.gains;
+ 			auto &red = swapRedBlueGains_ ? blue_ : red_;
+ 			auto &green = green_;
+ 			auto &blue = swapRedBlueGains_ ? red_ : blue_;
+--- libcamera-0.7.0.orig/src/libcamera/software_isp/debayer_egl.cpp
++++ libcamera-0.7.0/src/libcamera/software_isp/debayer_egl.cpp
+@@ -100,6 +100,7 @@ int DebayerEGL::getShaderVariableLocatio
+ 	attributeTexture_ = glGetAttribLocation(programId_, "textureIn");
+ 
+ 	textureUniformBayerDataIn_ = glGetUniformLocation(programId_, "tex_y");
++	awbUniformDataIn_ = glGetUniformLocation(programId_, "awb");
+ 	ccmUniformDataIn_ = glGetUniformLocation(programId_, "ccm");
+ 	blackLevelUniformDataIn_ = glGetUniformLocation(programId_, "blacklevel");
+ 	gammaUniformDataIn_ = glGetUniformLocation(programId_, "gamma");
+@@ -113,6 +114,7 @@ int DebayerEGL::getShaderVariableLocatio
+ 
+ 	LOG(Debayer, Debug) << "vertexIn " << attributeVertex_ << " textureIn " << attributeTexture_
+ 			    << " tex_y " << textureUniformBayerDataIn_
++			    << " awb " << awbUniformDataIn_
+ 			    << " ccm " << ccmUniformDataIn_
+ 			    << " blacklevel " << blackLevelUniformDataIn_
+ 			    << " gamma " << gammaUniformDataIn_
+@@ -491,6 +493,9 @@ void DebayerEGL::setShaderVariableValues
+ 	glUniform3f(blackLevelUniformDataIn_, params.blackLevel[0], params.blackLevel[1], params.blackLevel[2]);
+ 	LOG(Debayer, Debug) << " blackLevelUniformDataIn_ " << blackLevelUniformDataIn_ << " data " << params.blackLevel;
+ 
++	glUniform3f(awbUniformDataIn_, params.gains[0], params.gains[1], params.gains[2]);
++	LOG(Debayer, Debug) << " awbUniformDataIn_ " << awbUniformDataIn_ << " data " << params.gains;
++
+ 	/*
+ 	 * Gamma
+ 	 */
+--- libcamera-0.7.0.orig/src/libcamera/software_isp/debayer_egl.h
++++ libcamera-0.7.0/src/libcamera/software_isp/debayer_egl.h
+@@ -99,6 +99,9 @@ private:
+ 	GLint textureUniformBayerDataIn_;
+ 
+ 	/* Represent per-frame CCM as a uniform vector of floats 3 x 3 */
++	/* Per-frame AWB gains */
++	GLint awbUniformDataIn_;
++
+ 	GLint ccmUniformDataIn_;
+ 
+ 	/* Black Level compensation */

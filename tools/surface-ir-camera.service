@@ -1,0 +1,18 @@
+[Unit]
+Description=Мост ИК-камеры Surface Pro 8 (VD55G0) в V4L2
+Documentation=file:///home/do/Desktop/LinuxSurface8Camera/ir-vd55g0/NOTES.md
+After=modprobe@v4l2loopback.service
+Wants=modprobe@v4l2loopback.service
+
+[Service]
+# Служба держит устройство всегда, но сам сенсор включает только когда
+# кто-то открыл /dev/video<IR>. В покое туда идёт чёрная заставка (два
+# кадра в секунду, 0.2 % ядра), камера обесточена и диод приватности не
+# горит. Поэтому автозапуск безопасен.
+Type=simple
+ExecStart=/usr/local/bin/surface-ir-bridge
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

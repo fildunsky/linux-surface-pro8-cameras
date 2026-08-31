@@ -1,0 +1,73 @@
+Description: software_isp: привести суммы статистики к восьмибитному масштабу
+ Суммы по каналам (SwIspStats::sum_) копятся в родных отсчётах сенсора, а
+ единственный их потребитель — вычитание уровня чёрного в Awb — берёт
+ context.activeState.blc.level, который восьмибитный (blc.cpp сдвигает
+ значение тюнинга на 8). У десятибитного сенсора вычитается вчетверо
+ меньше нужного, и баланс белого промахивается тем сильнее, чем темнее
+ сцена.
+ .
+ Гистограмма яркости в тех же функциях статистики нормируется к восьми
+ битам прямо при накоплении (параметр div у SWSTATS_ACCUMULATE_LINE_STATS),
+ а суммы — нет. Здесь они делятся на тот же множитель в finishFrame(),
+ после накопления, чтобы не терять точность на каждом пикселе.
+ .
+ До этой правки уровень чёрного на ov5693 приходилось держать нулевым,
+ иначе баланс белого уезжал; из-за этого пьедестал (64 из 1023 у ov5693,
+ подтверждён и автоопределением libcamera, и заводским .aiqb) вообще не
+ вычитался, и картинка выходила блёклой — чёрный не был чёрным.
+ .
+ Ошибка есть и в текущем апстриме, отправить туда.
+--- libcamera-0.7.0.orig/include/libcamera/internal/software_isp/swstats_cpu.h
++++ libcamera-0.7.0/include/libcamera/internal/software_isp/swstats_cpu.h
+@@ -113,6 +113,15 @@ private:
+ 
+ 	Size patternSize_;
+ 
++	/*
++	 * Во сколько раз родные отсчёты сенсора крупнее восьмибитных.
++	 * Суммы по каналам копятся в родном масштабе, а их потребитель —
++	 * вычитание уровня чёрного в IPA — работает в восьмибитном,
++	 * поэтому перед публикацией суммы приводятся к нему.
++	 * См. finishFrame().
++	 */
++	unsigned int sumDiv_ = 1;
++
+ 	unsigned int xShift_;
+ 	unsigned int stride_;
+ 
+--- libcamera-0.7.0.orig/src/libcamera/software_isp/swstats_cpu.cpp
++++ libcamera-0.7.0/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -345,6 +345,20 @@ void SwStatsCpu::startFrame(uint32_t fra
+  */
+ void SwStatsCpu::finishFrame(uint32_t frame, uint32_t bufferId)
+ {
++	/*
++	 * Привести суммы по каналам к восьмибитному масштабу. Копятся они в
++	 * родных отсчётах сенсора (для десятибитного — 0..1023), а
++	 * единственный потребитель, вычитание уровня чёрного в Awb, берёт
++	 * blc.level, который восьмибитный. Без приведения у десятибитного
++	 * сенсора вычитается вчетверо меньше нужного, и баланс белого
++	 * промахивается тем сильнее, чем темнее сцена. Гистограмма яркости
++	 * приводится к восьми битам прямо при накоплении (параметр div у
++	 * SWSTATS_ACCUMULATE_LINE_STATS), суммы же делятся здесь, после
++	 * накопления, чтобы не терять точность на каждом пикселе.
++	 */
++	if (sumDiv_ > 1)
++		stats_.sum_ = stats_.sum_ / static_cast<uint64_t>(sumDiv_);
++
+ 	stats_.valid = frame % kStatPerNumFrames == 0;
+ 	*sharedStats_ = stats_;
+ 	statsReady.emit(frame, bufferId);
+@@ -399,6 +413,12 @@ int SwStatsCpu::configure(const StreamCo
+ 	BayerFormat bayerFormat =
+ 		BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
+ 
++	/*
++	 * Множитель приведения сумм к восьми битам: он же div, с которым
++	 * функции статистики нормируют гистограмму яркости.
++	 */
++	sumDiv_ = 1u << (bayerFormat.bitDepth > 8 ? bayerFormat.bitDepth - 8 : 0);
++
+ 	if (bayerFormat.packing == BayerFormat::Packing::None &&
+ 	    setupStandardBayerOrder(bayerFormat.order) == 0) {
+ 		processFrame_ = &SwStatsCpu::processBayerFrame2;

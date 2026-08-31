@@ -1,0 +1,15 @@
+Драйвер ИК-камеры Surface Pro 8 — STMicroelectronics VD55G0 (ACPI SMO55F0).
+
+Собран из mainline drivers/media/i2c/vd55g1.c: тот же регистровый набор,
+добавлены идентификатор модели 0x53354730, привязка по ACPI и запрос питания
+avdd (именно так его называет INT3472 на этой машине).
+
+Исходник получается воспроизводимо:
+  ~/Desktop/LinuxSurface8Camera/tools/rebuild-vd55g0.sh
+Обоснование каждой правки — в комментариях скрипта.
+
+Работает только вместе с пакетом ipu6-surface: без записи SMO55F0 в таблице
+ipu-bridge ядро не строит fwnode-граф, и vd55g0_probe падает на разборе
+эндпоинта ещё до чтения идентификатора.
+
+Откат: sudo dkms remove vd55g0/1.0-surface-pro8 --all

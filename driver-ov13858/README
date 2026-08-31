@@ -1,0 +1,10 @@
+Патченый ov13858 (задняя камера) для Surface Pro 8.
+
+Отличие от штатного: модуль объявляет себя перевёрнутым на 180 градусов,
+потому что физически он так и установлен, а SSDB в ACPI сообщает 0.
+
+Исходник получается воспроизводимо:
+  ~/Desktop/LinuxSurface8Camera/tools/rebuild-ov13858.sh
+(mainline + патчсет linux-surface + правка по мотивам PR linux-surface#2227).
+
+Откат:  sudo dkms remove ov13858/1.0-surface-pro8 --all

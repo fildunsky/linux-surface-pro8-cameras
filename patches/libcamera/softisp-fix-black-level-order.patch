@@ -1,0 +1,116 @@
+Description: libcamera: software_isp: Fix black level handling in CPU ISP
+ Backport of upstream libcamera commit 7d650a23d1685610fc209c7d050027b793ef03a0.
+ The CPU ISP applied the black level after white balance instead of before,
+ and used a single (green) black level for all three channels. Rewritten by
+ hand for 0.7.0: upstream depends on Vector::clamp(), which does not exist
+ here, so .max(0.0f).min(x) is used instead, and the code lives in DebayerCpu
+ rather than the not-yet-existing DebayerCpuThread.
+Origin: upstream, https://git.libcamera.org/libcamera/libcamera.git/commit/?id=7d650a23d1685610fc209c7d050027b793ef03a0
+Author: Milan Zamazal <mzamazal@redhat.com>
+--- libcamera-0.7.0.orig/src/libcamera/software_isp/debayer_cpu.cpp
++++ libcamera-0.7.0/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -17,6 +17,8 @@
+ #include <time.h>
+ #include <utility>
+ 
++#include <libcamera/base/utils.h>
++
+ #include <linux/dma-buf.h>
+ 
+ #include <libcamera/formats.h>
+@@ -752,32 +754,20 @@ void DebayerCpu::process4(uint32_t frame
+ 
+ void DebayerCpu::updateGammaTable(DebayerParams &params)
+ {
+-	const RGB<float> blackLevel = params.blackLevel;
+-	/* Take let's say the green channel black level */
+-	const unsigned int blackIndex = blackLevel[1] * gammaTable_.size();
+ 	const float gamma = params.gamma;
+ 	const float contrastExp = params.contrastExp;
+ 
+-	const float divisor = gammaTable_.size() - blackIndex - 1.0;
+-	for (unsigned int i = blackIndex; i < gammaTable_.size(); i++) {
+-		float normalized = (i - blackIndex) / divisor;
++	const float divisor = gammaTable_.size() - 1.0;
++	for (auto [i, value] : utils::enumerate(gammaTable_)) {
++		float normalized = i / divisor;
+ 		/* Convert 0..2 to 0..infinity; avoid actual inifinity at tan(pi/2) */
+ 		/* Apply simple S-curve */
+ 		if (normalized < 0.5)
+ 			normalized = 0.5 * std::pow(normalized / 0.5, contrastExp);
+ 		else
+ 			normalized = 1.0 - 0.5 * std::pow((1.0 - normalized) / 0.5, contrastExp);
+-		gammaTable_[i] = UINT8_MAX *
+-				 std::pow(normalized, gamma);
++		value = UINT8_MAX * std::pow(normalized, gamma);
+ 	}
+-	/*
+-	 * Due to CCM operations, the table lookup may reach indices below the black
+-	 * level. Let's set the table values below black level to the minimum
+-	 * non-black value to prevent problems when the minimum value is
+-	 * significantly non-zero (for example, when the image should be all grey).
+-	 */
+-	std::fill(gammaTable_.begin(), gammaTable_.begin() + blackIndex,
+-		  gammaTable_[blackIndex]);
+ }
+ 
+ void DebayerCpu::updateLookupTables(DebayerParams &params)
+@@ -789,11 +779,15 @@ void DebayerCpu::updateLookupTables(Deba
+ 	if (gammaUpdateNeeded)
+ 		updateGammaTable(params);
+ 
++	/* Processing order: black level -> gains -> gamma */
+ 	auto matrixChanged = [](const Matrix<float, 3, 3> &m1, const Matrix<float, 3, 3> &m2) -> bool {
+ 		return !std::equal(m1.data().begin(), m1.data().end(), m2.data().begin());
+ 	};
+ 	const unsigned int gammaTableSize = gammaTable_.size();
+-	const double div = static_cast<double>(kRGBLookupSize) / gammaTableSize;
++
++	const RGB<float> blackIndex = params.blackLevel * kRGBLookupSize;
++	const RGB<float> div = (RGB<float>(kRGBLookupSize) - blackIndex).max(1.0f);
++
+ 	if (ccmEnabled_) {
+ 		if (gammaUpdateNeeded ||
+ 		    matrixChanged(params.combinedMatrix, params_.combinedMatrix)) {
+@@ -804,16 +798,18 @@ void DebayerCpu::updateLookupTables(Deba
+ 			const unsigned int greenIndex = 1;
+ 			const unsigned int blueIndex = swapRedBlueGains_ ? 0 : 2;
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+-				red[i].r = std::round(i * params.combinedMatrix[redIndex][0]);
+-				red[i].g = std::round(i * params.combinedMatrix[greenIndex][0]);
+-				red[i].b = std::round(i * params.combinedMatrix[blueIndex][0]);
+-				green[i].r = std::round(i * params.combinedMatrix[redIndex][1]);
+-				green[i].g = std::round(i * params.combinedMatrix[greenIndex][1]);
+-				green[i].b = std::round(i * params.combinedMatrix[blueIndex][1]);
+-				blue[i].r = std::round(i * params.combinedMatrix[redIndex][2]);
+-				blue[i].g = std::round(i * params.combinedMatrix[greenIndex][2]);
+-				blue[i].b = std::round(i * params.combinedMatrix[blueIndex][2]);
+-				gammaLut_[i] = gammaTable_[i / div];
++				const RGB<float> rgb =
++					((RGB<float>(i) - blackIndex) * kRGBLookupSize / div).max(0.0f);
++				red[i].r = std::round(rgb.r() * params.combinedMatrix[redIndex][0]);
++				red[i].g = std::round(rgb.r() * params.combinedMatrix[greenIndex][0]);
++				red[i].b = std::round(rgb.r() * params.combinedMatrix[blueIndex][0]);
++				green[i].r = std::round(rgb.g() * params.combinedMatrix[redIndex][1]);
++				green[i].g = std::round(rgb.g() * params.combinedMatrix[greenIndex][1]);
++				green[i].b = std::round(rgb.g() * params.combinedMatrix[blueIndex][1]);
++				blue[i].r = std::round(rgb.b() * params.combinedMatrix[redIndex][2]);
++				blue[i].g = std::round(rgb.b() * params.combinedMatrix[greenIndex][2]);
++				blue[i].b = std::round(rgb.b() * params.combinedMatrix[blueIndex][2]);
++				gammaLut_[i] = gammaTable_[i * gammaTableSize / kRGBLookupSize];
+ 			}
+ 		}
+ 	} else {
+@@ -823,8 +819,10 @@ void DebayerCpu::updateLookupTables(Deba
+ 			auto &green = green_;
+ 			auto &blue = swapRedBlueGains_ ? red_ : blue_;
+ 			for (unsigned int i = 0; i < kRGBLookupSize; i++) {
+-				/* Apply gamma after gain! */
+-				const RGB<float> lutGains = (gains * i / div).min(gammaTableSize - 1);
++				const RGB<float> lutGains =
++					(gains * (RGB<float>(i) - blackIndex) * gammaTableSize / div)
++						.max(0.0f)
++						.min(gammaTableSize - 1.0f);
+ 				red[i] = gammaTable_[static_cast<unsigned int>(lutGains.r())];
+ 				green[i] = gammaTable_[static_cast<unsigned int>(lutGains.g())];
+ 				blue[i] = gammaTable_[static_cast<unsigned int>(lutGains.b())];
