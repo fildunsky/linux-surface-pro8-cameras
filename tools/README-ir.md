@@ -66,6 +66,41 @@ The ffmpeg input format must be `gray10le`, not `gray16le`: the data is
 nearly black frame (mean 0.4 out of 255). The line stride is 1344 bytes
 against 644*2 = 1288 bytes of pixels, so read 672 pixels wide and crop.
 
+## Freeing the camera without breaking your sound
+
+PipeWire holds `/dev/video*` open, so while it runs `intel_ipu6_isys`
+will not unload and `modprobe -r vd55g` silently does nothing. Any driver
+work needs it stopped.
+
+Stopping the services alone is not enough — their sockets start them
+again on the first access — so you have to stop the sockets too. And that
+is the trap: it is easy to bring the services back and forget the
+sockets, because the cameras start working again immediately and nothing
+looks wrong. The sound breaks later, when the services next stop and
+nothing is left to start them: the volume slider disappears and
+applications stop finding the microphone and speakers. If you do not know
+the cause it looks like it needs a reboot.
+
+Use the helper so that the same list goes down and comes back up:
+
+```sh
+./pipewire-hold.sh stop      # free the camera
+# ... driver work ...
+./pipewire-hold.sh start     # sound and cameras back
+./pipewire-hold.sh status
+```
+
+To recover a machine already in that state, without rebooting:
+
+```sh
+systemctl --user start pipewire.socket pipewire-pulse.socket
+systemctl --user start pipewire pipewire-pulse wireplumber
+```
+
+Check with `wpctl status`, not `pactl` — `pactl` lives in
+`pulseaudio-utils`, which may not be installed at all, and its empty
+output is very easy to misread as "the sound devices are gone".
+
 ## Measurement helpers
 
 * `ir-probe.sh [module params]` — one clean probe of the IR camera from a
