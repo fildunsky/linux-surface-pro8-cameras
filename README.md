@@ -104,3 +104,21 @@ there rather than this repository.
 Kernel drivers and libcamera patches keep the licence of the code they
 derive from (GPL-2.0 and LGPL-2.1-or-later respectively). Tools and
 documentation are MIT.
+
+## Where the discussion is happening
+
+Findings from this repository have been posted to the relevant
+linux-surface threads:
+
+* [kernel#169](https://github.com/linux-surface/kernel/pull/169) — VD55G0
+  driver; the unpacked-format finding
+* [#2171](https://github.com/linux-surface/linux-surface/pull/2171) —
+  MIPI_CTRL00; Pro 8 confirmation
+* [#2252](https://github.com/linux-surface/linux-surface/pull/2252) —
+  binning and INT3472 GPIO types
+* [#2227](https://github.com/linux-surface/linux-surface/pull/2227) —
+  rear camera rotation
+* [#2166](https://github.com/linux-surface/linux-surface/issues/2166) —
+  colour quality and the software ISP statistics bug
+* [#2153](https://github.com/linux-surface/linux-surface/issues/2153) —
+  IPU6 reverse engineering across Surface models
