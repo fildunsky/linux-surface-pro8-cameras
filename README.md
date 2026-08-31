@@ -78,9 +78,11 @@ redistribute:
 
 * **Intel factory calibration blobs** (`*.aiqb`). The colour correction
   matrices and the white balance curve in `tuning/` are derived from
-  these. Extract your own from the Windows driver package for your device
-  — they are per-module calibration, so ours are not strictly correct for
-  your unit anyway.
+  these. They are per-module calibration measured on one specific camera,
+  so ours are not right for your unit anyway. `docs/CALIBRATION.md` has
+  exact commands to pull your own out of Microsoft's driver package —
+  it takes a download and about five minutes, and needs no Windows
+  installation.
 * **VD55G0 firmware patch.** Get it from
   [petm5/vd55g-firmware](https://github.com/petm5/vd55g-firmware) and put
   it in `/lib/firmware`. Without it the sensor comes up in a reduced mode.
