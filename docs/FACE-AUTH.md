@@ -88,12 +88,20 @@ variables on the daemon, so put them in the systemd drop-in:
 | `VISAGE_FRAMES_PER_VERIFY` | frames examined per attempt |
 | `VISAGE_FRAMES_PER_ENROLL` | frames examined when enrolling |
 | `VISAGE_WARMUP_FRAMES` | frames discarded at stream start |
-| `VISAGE_LIVENESS_ENABLED` | anti-spoofing, **off by default** |
+| `VISAGE_LIVENESS_ENABLED` | anti-spoofing; off in visage's own default, on in the config recommended here |
 | `VISAGE_EMITTER_ENABLED` | visage's own UVC emitter control; keep off here |
 
-Worth deciding deliberately: with liveness detection off, an infrared
-photograph of your face would in principle pass. Turning it on costs time
-per authentication.
+Liveness detection works by looking for face displacement between frames:
+a living person is never perfectly still, a photograph is. With it off, an
+infrared photograph of your face would in principle pass — an ordinary
+phone photo would not, there is no infrared in it.
+
+It examines `VISAGE_FRAMES_PER_VERIFY` frames, 3 by default, which at
+~31 fps is only about 100 ms — not much time for a face to move. Measured
+here with liveness on, three consecutive attempts gave similarity 0.68,
+0.81 and 0.72 against a 0.40 threshold, roughly 1.2 seconds each, with no
+false rejections. If you do get them, raise `VISAGE_FRAMES_PER_VERIFY` to
+6 and watch `journalctl -u visaged -f` while authenticating.
 
 ## Enrolling
 

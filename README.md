@@ -8,7 +8,7 @@ front (OV5693), rear (OV13858) and the infrared Windows Hello camera
 |---|---|---|---|---|
 | front | OV5693 | `INT33BE` | csi2-4 | works, 1296x972 binned |
 | rear | OV13858 | `OVTID858` | csi2-1 | works, up to 4224x3136 |
-| infrared | VD55G0 | `SMO55F0` | csi2-5 | works, 644x604 mono, 50 fps |
+| infrared | VD55G0 | `SMO55F0` | csi2-5 | works, 644x604 mono, ~31 fps with illumination |
 
 The IPU6 is supported in mainline as ISYS only: it delivers raw Bayer and
 there is no hardware ISP, so all processing happens in libcamera's CPU
@@ -21,7 +21,8 @@ non-obvious thing that cost the most time. Asking the capture node for
 `Y10P` (MIPI packed) gets you exactly one frame-start short packet and
 then silence — no data, and no CSI-2 errors either, which makes it look
 like the sensor is dead. Asking for `Y10 ` (unpacked) just works, at
-50 fps with zero errors.
+50 fps with zero errors. (We then deliberately run it slower — see the
+illuminator section of `docs/FACE-AUTH.md`.)
 
 The mechanism is one line in `ipu6-isys-video.c`:
 
