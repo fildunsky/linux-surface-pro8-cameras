@@ -109,16 +109,28 @@ grep -v '^#' /etc/pam.d/common-auth
 sudo -k true          # must still accept your password
 ```
 
-## Open question: darkness
+## The IR illuminator
 
-Windows Hello works in a dark room because it turns on an IR illuminator.
-We do not drive one. The VD55G0 driver supports strobe GPIOs
-(`st,leds` in the device properties), and the Windows register table
-alternates `GPIO_CTRL` between 3 and 5 across two contexts, which looks
-like exactly that — frames with and without illumination, for background
-subtraction. None of this is wired up here.
+Without it, face authentication does not work in a room lit by LED lamps.
+They emit almost no infrared, unlike sunlight or incandescent bulbs, so
+the sensor sees essentially nothing: exposure pinned at its maximum
+(1796 of 1796), digital gain at 8x, and still a mean brightness of about
+16 out of 255. In daylight the same camera produces a perfectly good
+picture, which makes this easy to misdiagnose.
 
-In practice the IR camera sees well in a normally lit room and in
-daylight, because sunlight and most lamps emit plenty of infrared. In a
-genuinely dark room it will probably fail. If you need that case, driving
-the illuminator is the next piece of work.
+The illuminator hangs off sensor GPIO 1 in strobe mode. The driver
+already knows this — `ext_leds_mask` defaults to that pin — it just needs
+enabling through the `led_mode` control:
+
+```sh
+v4l2-ctl -d /dev/v4l-subdevN --set-ctrl=led_mode=1
+```
+
+Measured, twice: mean brightness 16 with it off, 86 with it on.
+
+**It must be set before the stream starts.** The sensor latches its GPIO
+configuration at stream start, and the same control set on an already
+running stream changes nothing — which is a confusing way to lose an
+hour. `tools/ir-setup.sh` sets it in the right place, so anything going
+through that script gets illumination for free.
+
