@@ -38,7 +38,15 @@ sudo systemctl enable --now surface-ir-camera
 
 The node is found by card label, not by number, because the number moves
 between boots depending on whether v4l2loopback or the IPU6 driver loads
-first.
+first. For the same reason, install the udev rule so that anything else
+pointing at the IR camera has a stable path:
+
+```sh
+sudo install -m644 99-surface-ir-camera.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=video4linux
+ls -l /dev/surface-ir-camera
+```
 
 Verify that the sensor really is powered down when idle:
 
