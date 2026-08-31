@@ -93,6 +93,122 @@ Read `docs/INSTALL.md`. Short form: each `driver-*` directory is a DKMS
 package, the libcamera patches need a rebuild of the distribution package,
 and the tuning files go into `/usr/share/libcamera/ipa/simple/`.
 
+## Face authentication
+
+Once the IR camera works, Windows-Hello-style login takes about ten
+minutes. Use [**visage**](https://github.com/sovren-software/visage) — a
+Rust daemon plus PAM module, actively developed, whose capture path
+speaks plain V4L2 in GREY/YUYV/Y16, which is exactly what the bridge
+here produces.
+
+Not Howdy. Howdy is the better known project, but its newest release is
+v2.6.1 from September 2020, its `master` branch rewrite has never been
+released, and its installer both violates PEP 668 and cannot find a
+`v4l2loopback` device in the first place. `docs/FACE-AUTH.md` has the
+detail if you want it.
+
+Note that visage describes itself as *not yet suitable for production
+use*. Its PAM integration is fail-safe, though — see below.
+
+### Install
+
+```sh
+curl -LO https://github.com/sovren-software/visage/releases/download/v0.4.0-rc.1/visage_0.4.0.rc.1-1_amd64.deb
+sudo apt install ./visage_0.4.0.rc.1-1_amd64.deb
+
+# ONNX models, about 180 MB. The download is flaky — if it stops partway,
+# just run it again; it resumes per file and verifies checksums.
+sudo visage setup
+```
+
+### Configure
+
+visage has no GUI and no config file: everything is environment variables
+on the daemon. These three are what this hardware needs.
+
+```sh
+sudo mkdir -p /etc/systemd/system/visaged.service.d
+sudo tee /etc/systemd/system/visaged.service.d/surface.conf <<'EOF'
+[Service]
+# The udev symlink, not /dev/videoN — the loopback node number moves
+# between boots depending on module load order.
+Environment=VISAGE_CAMERA_DEVICE=/dev/surface-ir-camera
+
+# visage drives IR emitters through a UVC extension unit. This camera is
+# not UVC, it sits behind the IPU6, and its illuminator is handled by
+# ir-setup.sh instead. Stop visage trying.
+Environment=VISAGE_EMITTER_ENABLED=0
+
+# Anti-spoofing: visage looks for face displacement between frames, since
+# a living person is never perfectly still and a photograph is. Without
+# this an infrared photograph of your face would in principle pass — an
+# ordinary phone photo would not, there is no IR in it.
+Environment=VISAGE_LIVENESS_ENABLED=1
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now visaged
+```
+
+### Enrol your face
+
+Do this sitting in front of the camera, and enrol **two** models — one
+plain and one for however else you often look. Recognition gets
+noticeably more robust when you are not square-on to the screen.
+
+```sh
+sudo visage enroll -l normal
+sudo visage enroll -l glasses      # or: beard, hat, headphones, evening
+sudo visage list
+```
+
+### Check it
+
+```sh
+sudo visage status                                  # daemon, camera, model count
+sudo visage test -d /dev/surface-ir-camera -n 15    # frames and brightness
+sudo -k && sudo true                                # should let you in by face
+```
+
+Measured here, three consecutive attempts: similarity 0.68, 0.81 and 0.72
+against a threshold of 0.40, about 1.2 seconds each.
+
+`visage test` writes the captured frames to `/tmp/visage-test` as PGM
+files. Look at them if something seems wrong, then delete them — they are
+pictures of your face.
+
+### It cannot lock you out
+
+The PAM profile visage installs runs before `pam_unix` as:
+
+```
+[success=done default=ignore]    pam_visage.so
+```
+
+On success authentication completes. On **anything** else — no face, no
+camera, daemon stopped, liveness check failed, timeout — the result is
+`ignore` and PAM falls through to the password prompt. It adds a way in;
+it does not remove one. Verify that yourself after installing:
+
+```sh
+grep -v '^#' /etc/pam.d/common-auth
+sudo -k true          # must still accept your password
+```
+
+### If it starts refusing you
+
+Liveness detection examines `VISAGE_FRAMES_PER_VERIFY` frames, 3 by
+default, which at ~31 fps is only about 100 ms — not much time for a face
+to move. If you get false rejections, give it more frames:
+
+```
+Environment=VISAGE_FRAMES_PER_VERIFY=6
+```
+
+Watch what is actually happening with `sudo journalctl -u visaged -f`
+while authenticating in another terminal. It logs similarity, displacement
+and the reason for any refusal.
+
 ## Upstream status
 
 Most of this belongs upstream and some of it already is. See
