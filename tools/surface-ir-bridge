@@ -92,6 +92,7 @@ class Bridge:
         self.camera = None
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.pos = 0          # положение внутри текущего кадра
         self.ffmpeg = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-f", "rawvideo", "-pix_fmt", "gray10le",
@@ -102,6 +103,26 @@ class Bridge:
         self.out = self.ffmpeg.stdin
         threading.Thread(target=self.pump, daemon=True).start()
 
+    def _write(self, data):
+        """Записать и запомнить положение внутри кадра."""
+        self.out.write(data)
+        self.pos = (self.pos + len(data)) % FRAME
+
+    def _align(self):
+        """Дописать остаток начатого кадра нулями.
+
+        ffmpeg читает stdin как rawvideo кадрами ровно по FRAME байт. Кадры
+        с камеры приходят кусками по 64 КБ и на границу кадра не попадают,
+        поэтому переключение источника посреди кадра сдвигает весь поток:
+        следующий целый кадр заставки ffmpeg видит как обрезанный и падает
+        с «Invalid buffer size, packet size N < expected frame_size».
+        Мост при этом выходит, systemd поднимает его заново, и на несколько
+        секунд петля остаётся без поставщика — ровно в эту дыру попадал
+        запрос от экрана входа GDM.
+        """
+        if self.pos:
+            self._write(b"\0" * (FRAME - self.pos))
+
     def pump(self):
         """Единственный писатель: либо заставка, либо кадры с камеры."""
         while not self.stop.is_set():
@@ -109,7 +130,8 @@ class Bridge:
                 cam = self.camera
             if cam is None:
                 try:
-                    self.out.write(BLACK)
+                    self._align()
+                    self._write(BLACK)
                     self.out.flush()
                 except (BrokenPipeError, ValueError):
                     return
@@ -121,9 +143,13 @@ class Bridge:
                 with self.lock:
                     if self.camera is cam:
                         self.camera = None
+                try:
+                    self._align()
+                except (BrokenPipeError, ValueError):
+                    return
                 continue
             try:
-                self.out.write(chunk)
+                self._write(chunk)
             except (BrokenPipeError, ValueError):
                 return
 
