@@ -189,6 +189,27 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now visaged
 ```
 
+The same error message has a second cause, and waiting does not help with
+that one: the loopback's format lives exactly as long as the writer holding
+it, so if the writer dies the format goes with it and every request in the
+next second or so fails. That is why the bridge no longer pipes frames
+through `ffmpeg` and writes them into the loopback itself — one writer, set
+up once, for the life of the process. If you are carrying an older copy of
+`surface-ir-bridge` that spawns `ffmpeg`, update it.
+
+One more way to arrive at the same symptom, from a different direction:
+`v4l2loopback` is loaded out of the initramfs, so it takes the `devices=`
+count from the image, not from `/etc/modprobe.d`. Add the third node,
+reboot without rebuilding the image, and you get two loopbacks instead of
+three — the bridge finds no node with the IR card label, nothing feeds the
+device, and face authentication is simply dead on that kernel while
+everything on disk looks correct. Run `update-initramfs -u -k all` after
+editing the config, and check with
+
+```sh
+lsinitramfs /boot/initrd.img-$(uname -r) | grep v4l2-relayd
+```
+
 ### Enrol your face
 
 Do this sitting in front of the camera, and enrol **two** models — one

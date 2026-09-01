@@ -29,11 +29,29 @@ options v4l2loopback devices=3 exclusive_caps=1,1,1 max_buffers=4 \
         card_label="Surface Camera,Surface Camera Rear,Surface Camera IR"
 EOF
 
+# v4l2loopback is loaded from the initramfs, long before systemd reads
+# /etc/modprobe.d — so the image has to be rebuilt for every kernel that
+# will boot this, or the third node is silently never created.
+sudo update-initramfs -u -k all
+
+sudo apt install python3-numpy v4l-utils
 sudo install -m755 surface-ir-bridge /usr/local/bin/
 sudo install -m755 ir-setup.sh /usr/local/lib/surface-ir-setup.sh
 sudo install -m644 surface-ir-camera.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now surface-ir-camera
+```
+
+That `update-initramfs` line is not a formality. Editing the modprobe
+config and rebooting is not enough: the module is already loaded from the
+image by the time systemd starts, so it keeps whatever `devices=` count
+the image was built with. Miss it and everything looks right — the config
+on disk says three nodes, `lsmod` shows the module — while `/dev` has two
+and the bridge exits with "no node with card label 'Surface Camera IR'".
+Check what the image actually holds:
+
+```sh
+lsinitramfs /boot/initrd.img-$(uname -r) | grep v4l2-relayd
 ```
 
 The node is found by card label, not by number, because the number moves
@@ -59,12 +77,31 @@ cat /sys/class/regulator/regulator.N/state  # 'disabled' when nobody looks
 
 v4l2-relayd builds its input as a GStreamer pipeline, and `v4l2src`
 refuses to negotiate `Y10 `. Explicit `GRAY16_LE` caps do not help. So the
-bridge pulls frames with `v4l2-ctl` and converts them with `ffmpeg`.
+bridge pulls frames with `v4l2-ctl` and writes them into the loopback
+itself, with `VIDIOC_S_FMT` and `write()`.
 
-The ffmpeg input format must be `gray10le`, not `gray16le`: the data is
-10-bit in 16-bit little-endian words, and treating it as 16-bit yields a
-nearly black frame (mean 0.4 out of 255). The line stride is 1344 bytes
-against 644*2 = 1288 bytes of pixels, so read 672 pixels wide and crop.
+The data is 10-bit in 16-bit little-endian words — read it as 16-bit and
+you get a nearly black frame (mean 0.4 out of 255). The line stride is
+1344 bytes against 644*2 = 1288 bytes of pixels, so read 672 pixels wide
+and crop.
+
+**Why not ffmpeg for the conversion.** It used to be, and the loopback's
+format is the reason it no longer is: that format lives exactly as long as
+the writer holding it. Any death of ffmpeg — even with an immediate
+respawn — left about a second in which `VIDIOC_G_FMT` on the loopback
+returned `EINVAL`, and a request landing in that window failed outright.
+One did: the GDM greeter's face check on a cold boot, with
+`failed to query current format`. With the bridge as its own writer the
+format is set once for the life of the process. Frame alignment stopped
+being a concern at the same time: `write()` takes whole frames, so there
+is no byte stream to keep in step.
+
+**Keep the conversion in the TV range.** 10 bits become 8 as
+`round(16 + v * 219 / 1023)`, not as `v >> 2`. That is what ffmpeg did for
+`yuyv422`, and enrolled faces were captured through it; a plain shift
+gives a more contrasty picture than the models were built from. Measured
+against ffmpeg's output on real frames the LUT differs by at most one
+least significant bit (ffmpeg also dithers).
 
 ## Freeing the camera without breaking your sound
 

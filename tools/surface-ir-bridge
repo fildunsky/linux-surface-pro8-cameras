@@ -8,21 +8,25 @@
 
 Почему нужна заставка. v4l2loopback не отдаёт сторону захвата, пока
 устройство не держит писатель с выставленным форматом: попытка чтения
-даёт "unsupported stream type". Формат не переживает уход писателя, а
-ffmpeg выставляет его, только получив первый кадр. Значит кто-то обязан
-писать всегда — иначе потребитель не сможет даже открыть устройство, и
-событию об открытии неоткуда взяться. Вхолостую это два кадра в секунду,
-меньше процента ядра.
+даёт "unsupported stream type". Значит кто-то обязан писать всегда —
+иначе потребитель не сможет даже открыть устройство, и событию об
+открытии неоткуда взяться. Вхолостую это два кадра в секунду.
+
+Кадры пишутся в петлю напрямую, через VIDIOC_S_FMT и write(). Раньше тут
+стоял ffmpeg, которому мост переливал сырой поток в stdin, и это было
+источником целого класса отказов: формат на петле живёт ровно столько,
+сколько живёт писатель, поэтому любая смерть ffmpeg — даже с немедленным
+перезапуском — оставляла секундную дыру, в которую VIDIOC_G_FMT отдавал
+EINVAL. Ровно в неё попал запрос от экрана входа GDM на загрузке
+(«failed to query current format»). Со своим писателем формат выставлен
+один раз за всё время жизни процесса и не исчезает. Заодно пропала
+подгонка потока по границе кадра: наружу уходят только целые кадры.
 
 Как узнаём об открытии: событие v4l2loopback V4L2_EVENT_PRI_CLIENT_USAGE.
 Его тип — 0x10E00001, а НЕ V4L2_EVENT_PRIVATE_START + 1, как можно
 подумать по названию: в v4l2loopback.c к базе прибавлено собственное
 смещение 0x08E00000. Второй код, 0x08000000, — для убунтовского патча;
 подписываемся на оба, работает тот, который примут.
-
-Писатель здесь ровно один — вот этот процесс. Данные с камеры он
-переливает в ffmpeg сам, а не отдаёт ffmpeg отдельным процессом, чтобы
-при переключении заставка и камера не писали в один поток вперемешку.
 """
 import fcntl
 import glob
@@ -35,6 +39,8 @@ import sys
 import threading
 import time
 
+import numpy as np
+
 EVENTS = (0x10E00001, 0x08000000)
 VIDIOC_SUBSCRIBE_EVENT = 0x4020565A
 # _IOR('V', 89, struct v4l2_event). Размер структуры 136, а не 128: в
@@ -43,6 +49,14 @@ VIDIOC_SUBSCRIBE_EVENT = 0x4020565A
 VIDIOC_DQEVENT = 0x80885659
 # Поэтому же счётчик клиентов лежит по смещению 8, а не сразу за type.
 COUNT_OFFSET = 8
+# _IOWR('V', 5, struct v4l2_format), 208 байт: __u32 type, дырка на
+# выравнивание (в объединении есть v4l2_window с указателем), дальше 200
+# байт объединения, из которых нам нужны первые 48 — v4l2_pix_format.
+VIDIOC_S_FMT = 0xC0D05605
+BUF_TYPE_VIDEO_OUTPUT = 2
+FOURCC_YUYV = 0x56595559
+FIELD_NONE = 1
+COLORSPACE_SRGB = 8
 
 SETUP = "/usr/local/lib/surface-ir-setup.sh"
 CAPTURE_ENTITY = os.environ.get("IR_CAPTURE_ENTITY", "Intel IPU6 ISYS Capture 40")
@@ -52,8 +66,8 @@ def _capture_node():
     """Найти узел захвата по имени сущности в media-графе.
 
     Номер /dev/videoN зависит от того, сколько петель v4l2loopback
-    зарегистрировалось раньше драйвера ipu6, и меняется между ядрами:
-    на 6.19 эта сущность была /dev/video42, на 7.2 стала /dev/video43.
+    зарегистрировалось раньше драйвера ipu6, и меняется: на двух петлях
+    эта сущность была /dev/video42, на трёх стала /dev/video43.
     Имя сущности при этом постоянно, от него и пляшем.
     """
     forced = os.environ.get("IR_CAPTURE")
@@ -75,8 +89,17 @@ CAPTURE = _capture_node()
 CARD = "Surface Camera IR"
 W, H, STRIDE_PX, FPS = 644, 604, 672, 31
 IDLE_FPS = 2
-FRAME = STRIDE_PX * H * 2          # gray10le, два байта на пиксель
-BLACK = bytes(FRAME)
+IN_FRAME = STRIDE_PX * H * 2       # 'Y10 ': 10 бит в 16-битной ячейке
+OUT_BPL = W * 2
+OUT_FRAME = OUT_BPL * H
+
+# Перевод 10 бит в 8. Диапазон именно «телевизионный», 16..235, а не
+# простой сдвиг на два бита: столько лет тут стоял ffmpeg, который для
+# yuyv422 сжимает полный диапазон в этот, и лица в базе сняты такими.
+# Сдвиг вместо этого дал бы картинку контрастнее, чем при постановке
+# моделей, и схожесть поехала бы вниз. Расхождение с ffmpeg на реальном
+# кадре — не больше единицы младшего разряда (у него ещё дизеринг).
+LUT = np.clip(np.rint(16 + np.arange(1024) * 219 / 1023), 0, 255).astype(np.uint8)
 
 
 def loopback_node():
@@ -86,108 +109,96 @@ def loopback_node():
     sys.exit(f"нет узла с меткой карты '{CARD}'")
 
 
-class Bridge:
+class Sink:
+    """Сторона записи в петлю: открыта всё время жизни процесса."""
+
     def __init__(self, dev):
         self.dev = dev
+        self.fd = os.open(dev, os.O_RDWR)
+        fmt = bytearray(208)
+        struct.pack_into("=I", fmt, 0, BUF_TYPE_VIDEO_OUTPUT)
+        struct.pack_into("=12I", fmt, 8,
+                         W, H, FOURCC_YUYV, FIELD_NONE, OUT_BPL, OUT_FRAME,
+                         COLORSPACE_SRGB, 0, 0, 0, 0, 0)
+        fcntl.ioctl(self.fd, VIDIOC_S_FMT, fmt)
+        got = struct.unpack_from("=12I", fmt, 8)
+        if (got[0], got[1], got[2]) != (W, H, FOURCC_YUYV):
+            sys.exit(f"петля не приняла формат: {got[:3]}")
+        # Кадр наружу собирается на месте: яркость меняем, цветность нет.
+        self.frame = np.empty((H, W, 2), np.uint8)
+        self.frame[..., 1] = 128
+        self.black = np.empty((H, W, 2), np.uint8)
+        self.black[..., 0] = LUT[0]
+        self.black[..., 1] = 128
+        self.black = self.black.tobytes()
+
+    def write(self, data):
+        mv = memoryview(data)
+        while mv:
+            mv = mv[os.write(self.fd, mv):]
+
+    def convert(self, raw):
+        """'Y10 ' со строкой 672 пикселя -> YUYV 644x604."""
+        src = np.frombuffer(raw, "<u2").reshape(H, STRIDE_PX)[:, :W]
+        self.frame[..., 0] = LUT[src & 0x3FF]
+        return self.frame.tobytes()
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+class Bridge:
+    def __init__(self, dev):
+        self.sink = Sink(dev)
         self.camera = None
         self.lock = threading.Lock()
         self.stop = threading.Event()
-        self.pos = 0          # положение внутри текущего кадра
-        self.restarts = []    # отметки времени перезапусков ffmpeg
-        self._spawn_ffmpeg()
         threading.Thread(target=self.pump, daemon=True).start()
 
-    def _spawn_ffmpeg(self):
-        self.ffmpeg = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-f", "rawvideo", "-pix_fmt", "gray10le",
-             "-s", f"{STRIDE_PX}x{H}", "-r", str(FPS), "-i", "pipe:0",
-             "-vf", f"crop={W}:{H}:0:0",
-             "-f", "v4l2", "-pix_fmt", "yuyv422", self.dev],
-            stdin=subprocess.PIPE)
-        self.out = self.ffmpeg.stdin
-        self.pos = 0
+    def _read_frame(self, cam):
+        """Собрать ровно один кадр со стороны камеры.
 
-    def restart_ffmpeg(self):
-        """Поднять ffmpeg на месте, не выходя из процесса.
-
-        Пока мост выходил и ждал перезапуска от systemd, петля на несколько
-        секунд оставалась без поставщика, и VIDIOC_G_FMT на ней отдавал
-        EINVAL. Запрос от экрана входа GDM попадал ровно в это окно и
-        возвращался с "failed to query current format". Своими силами
-        восстановление занимает доли секунды и дыры не оставляет.
+        v4l2-ctl отдаёт поток кусками, на границу кадра они не попадают,
+        поэтому кадр собирается по частям. Наружу уходят только целые
+        кадры: писателю петли, в отличие от stdin ffmpeg, частичные
+        данные отдавать нечем — write() принимает кадр целиком.
         """
-        now = time.monotonic()
-        self.restarts = [t for t in self.restarts if now - t < 30] + [now]
-        if len(self.restarts) > 5:
-            sys.exit("ffmpeg падает раз за разом, отдаю перезапуск systemd")
-        with self.lock:
-            try:
-                self.out.close()
-            except Exception:
-                pass
-            try:
-                self.ffmpeg.kill()
-                self.ffmpeg.wait(timeout=5)
-            except Exception:
-                pass
-            self._spawn_ffmpeg()
-        print("ИК: ffmpeg перезапущен на месте", flush=True)
-
-    def _write(self, data):
-        """Записать и запомнить положение внутри кадра."""
-        with self.lock:
-            out = self.out
-        out.write(data)
-        self.pos = (self.pos + len(data)) % FRAME
-
-    def _align(self):
-        """Дописать остаток начатого кадра нулями.
-
-        ffmpeg читает stdin как rawvideo кадрами ровно по FRAME байт. Кадры
-        с камеры приходят кусками по 64 КБ и на границу кадра не попадают,
-        поэтому переключение источника посреди кадра сдвигает весь поток:
-        следующий целый кадр заставки ffmpeg видит как обрезанный и падает
-        с «Invalid buffer size, packet size N < expected frame_size».
-        Мост при этом выходит, systemd поднимает его заново, и на несколько
-        секунд петля остаётся без поставщика — ровно в эту дыру попадал
-        запрос от экрана входа GDM.
-        """
-        if self.pos:
-            self._write(b"\0" * (FRAME - self.pos))
+        buf = bytearray(IN_FRAME)
+        mv = memoryview(buf)
+        off = 0
+        while off < IN_FRAME:
+            n = cam.stdout.readinto(mv[off:])
+            if not n:
+                return None
+            off += n
+            if self.stop.is_set():
+                return None
+        return buf
 
     def pump(self):
         """Единственный писатель: либо заставка, либо кадры с камеры."""
         while not self.stop.is_set():
             with self.lock:
                 cam = self.camera
-            if cam is None:
-                try:
-                    self._align()
-                    self._write(BLACK)
-                    self.out.flush()
-                except (BrokenPipeError, ValueError, OSError):
-                    time.sleep(0.2)
-                    continue
-                time.sleep(1.0 / IDLE_FPS)
-                continue
-            chunk = cam.stdout.read(65536)
-            if not chunk:
-                # камера отвалилась сама — вернуться к заставке
-                with self.lock:
-                    if self.camera is cam:
-                        self.camera = None
-                try:
-                    self._align()
-                except (BrokenPipeError, ValueError, OSError):
-                    time.sleep(0.2)
-                    continue
-                continue
             try:
-                self._write(chunk)
-            except (BrokenPipeError, ValueError, OSError):
+                if cam is None:
+                    self.sink.write(self.sink.black)
+                    time.sleep(1.0 / IDLE_FPS)
+                    continue
+                raw = self._read_frame(cam)
+                if raw is None:
+                    # камера отвалилась сама — вернуться к заставке
+                    with self.lock:
+                        if self.camera is cam:
+                            self.camera = None
+                    continue
+                self.sink.write(self.sink.convert(raw))
+            except OSError as e:
+                print(f"ИК: петля не приняла кадр: {e}", flush=True)
                 time.sleep(0.2)
-                continue
 
     def start_camera(self):
         with self.lock:
@@ -196,7 +207,8 @@ class Bridge:
         subprocess.run([SETUP], stdout=subprocess.DEVNULL, check=True)
         proc = subprocess.Popen(
             ["v4l2-ctl", "-d", CAPTURE, "--stream-mmap", "--stream-to=-"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            bufsize=0)
         with self.lock:
             self.camera = proc
         print("ИК: потребитель пришёл, камера включена", flush=True)
@@ -217,11 +229,7 @@ class Bridge:
     def shutdown(self):
         self.stop.set()
         self.stop_camera()
-        try:
-            self.out.close()
-        except Exception:
-            pass
-        self.ffmpeg.terminate()
+        self.sink.close()
 
 
 def main():
@@ -252,12 +260,7 @@ def main():
     poller = select.poll()
     poller.register(fd, select.POLLPRI)
     while True:
-        # Полсекунды, а не две: этим таймаутом ограничено время, за которое
-        # мы заметим упавший ffmpeg, а пока он лежит, петля стоит без
-        # поставщика и отдаёт EINVAL на запрос формата.
-        if not poller.poll(500):
-            if bridge.ffmpeg.poll() is not None:
-                bridge.restart_ffmpeg()
+        if not poller.poll(2000):
             continue
         buf = bytearray(136)
         try:
