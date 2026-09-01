@@ -45,7 +45,33 @@ VIDIOC_DQEVENT = 0x80885659
 COUNT_OFFSET = 8
 
 SETUP = "/usr/local/lib/surface-ir-setup.sh"
-CAPTURE = os.environ.get("IR_CAPTURE", "/dev/video42")
+CAPTURE_ENTITY = os.environ.get("IR_CAPTURE_ENTITY", "Intel IPU6 ISYS Capture 40")
+
+
+def _capture_node():
+    """Найти узел захвата по имени сущности в media-графе.
+
+    Номер /dev/videoN зависит от того, сколько петель v4l2loopback
+    зарегистрировалось раньше драйвера ipu6, и меняется между ядрами:
+    на 6.19 эта сущность была /dev/video42, на 7.2 стала /dev/video43.
+    Имя сущности при этом постоянно, от него и пляшем.
+    """
+    forced = os.environ.get("IR_CAPTURE")
+    if forced:
+        return forced
+    try:
+        out = subprocess.run(
+            ["media-ctl", "-d", MEDIA, "-e", CAPTURE_ENTITY],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        out = ""
+    if not out.startswith("/dev/video"):
+        sys.exit(f"не найден узел захвата для сущности {CAPTURE_ENTITY!r}")
+    return out
+
+
+MEDIA = os.environ.get("IR_MEDIA", "/dev/media0")
+CAPTURE = _capture_node()
 CARD = "Surface Camera IR"
 W, H, STRIDE_PX, FPS = 644, 604, 672, 31
 IDLE_FPS = 2

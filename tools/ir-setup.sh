@@ -66,6 +66,16 @@ if [ -n "${SUBDEV:-}" ]; then
         >/dev/null 2>&1 || echo "не удалось задать частоту кадров" >&2
 fi
 
-v4l2-ctl -d "${VIDEO:-/dev/video42}" \
+# Номер /dev/videoN зависит от того, сколько петель v4l2loopback успело
+# зарегистрироваться раньше ipu6, и меняется между ядрами: на 6.19 эта
+# сущность была /dev/video42, на 7.2 стала /dev/video43. Имя сущности
+# постоянно, поэтому спрашиваем номер у media-ctl, а не зашиваем.
+VIDEO=${VIDEO:-$(media-ctl -d "$M" -e "Intel IPU6 ISYS Capture 40")}
+case "${VIDEO:-}" in
+  /dev/video*) ;;
+  *) echo "не найден узел захвата для 'Intel IPU6 ISYS Capture 40'" >&2; exit 1 ;;
+esac
+
+v4l2-ctl -d "$VIDEO" \
   --set-fmt-video=width=$W,height=$H,pixelformat='Y10 ' >/dev/null || exit 1
-v4l2-ctl -d "${VIDEO:-/dev/video42}" --get-fmt-video | grep -E "Width|Pixel|Bytes"
+v4l2-ctl -d "$VIDEO" --get-fmt-video | grep -E "Width|Pixel|Bytes"

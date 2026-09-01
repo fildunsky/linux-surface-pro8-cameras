@@ -9,6 +9,11 @@
 # Формат ffmpeg должен быть gray10le, а не gray16le: gray16le считает данные
 # шестнадцатибитными и даёт почти чёрный кадр (среднее 0.4 из 255).
 set -u
+
+# Номер /dev/videoN меняется между ядрами (зависит от порядка регистрации
+# петель v4l2loopback), поэтому спрашиваем его у media-ctl по имени сущности.
+VIDEO=${VIDEO:-$(media-ctl -d "${M:-/dev/media0}" -e "Intel IPU6 ISYS Capture 40")}
+case "${VIDEO:-}" in /dev/video*) ;; *) echo "не найден узел захвата" >&2; exit 1 ;; esac
 [ "$(id -u)" = 0 ] || { echo "нужен root" >&2; exit 1; }
 N=${1:-10}
 OUT=${2:-/tmp/ir}
@@ -20,7 +25,7 @@ mkdir -p "$OUT"
 RAW=$(mktemp /tmp/ir-XXXXXX.raw)
 trap 'rm -f "$RAW"' EXIT
 
-timeout 30 v4l2-ctl -d /dev/video42 --stream-mmap --stream-count="$N" \
+timeout 30 v4l2-ctl -d "$VIDEO" --stream-mmap --stream-count="$N" \
   --stream-to="$RAW" >/dev/null 2>&1
 SZ=$(stat -c%s "$RAW" 2>/dev/null || echo 0)
 [ "$SZ" -gt 0 ] || { echo "кадров нет" >&2; exit 1; }

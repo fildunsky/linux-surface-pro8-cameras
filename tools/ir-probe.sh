@@ -24,6 +24,11 @@
 # Контроль метода: на рабочей цветной камере тот же счёт даёт ~96 SOF за
 # 20 секунд. У ИК стабильно SOF=1, DATA=0.
 set -u
+
+# Номер /dev/videoN меняется между ядрами (зависит от порядка регистрации
+# петель v4l2loopback), поэтому спрашиваем его у media-ctl по имени сущности.
+VIDEO=${VIDEO:-$(media-ctl -d "${M:-/dev/media0}" -e "Intel IPU6 ISYS Capture 40")}
+case "${VIDEO:-}" in /dev/video*) ;; *) echo "не найден узел захвата" >&2; exit 1 ;; esac
 ARGS="$*"
 systemctl stop v4l2-relayd@surface-front v4l2-relayd@surface-rear 2>/dev/null
 modprobe -r intel_ipu6_isys || { echo "isys держат"; exit 1; }
@@ -40,7 +45,7 @@ for pad in '"vd55g 3-0060":0' '"Intel IPU6 CSI2 5":0' '"Intel IPU6 CSI2 5":1'; d
   media-ctl -d $M -V "$pad [fmt:Y10_1X10/644x604]" 2>/dev/null
 done
 dmesg -C; rm -f /tmp/ir.raw
-timeout 12 v4l2-ctl -d /dev/video42 --set-fmt-video=width=644,height=604,pixelformat=Y10P \
+timeout 12 v4l2-ctl -d "$VIDEO" --set-fmt-video=width=644,height=604,pixelformat=Y10P \
   --stream-mmap --stream-count=5 --stream-to=/tmp/ir.raw >/dev/null 2>&1
 echo "[$ARGS] -> $(stat -c%s /tmp/ir.raw 2>/dev/null || echo 0) байт  SOF=$(dmesg|grep -c FRAME_SOF) DATA=$(dmesg|grep -c PIN_DATA_READY)"
 dmesg | grep -iE "Windows register table|OIF_CTRL left" | sed 's/.*: /    /'
