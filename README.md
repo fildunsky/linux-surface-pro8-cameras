@@ -151,6 +151,38 @@ Environment=VISAGE_EMITTER_ENABLED=0
 # this an infrared photograph of your face would in principle pass — an
 # ordinary phone photo would not, there is no IR in it.
 Environment=VISAGE_LIVENESS_ENABLED=1
+
+# Liveness looks at how far the face moves between frames. Three frames at
+# ~31 fps is about 100 ms, and someone sitting still in front of a login
+# screen does not move that much — measured here, a correctly recognised
+# face was refused on displacement 0.25 against a threshold of 0.8. More
+# frames give natural movement time to happen; the check itself is no less
+# strict.
+Environment=VISAGE_FRAMES_PER_VERIFY=6
+EOF
+```
+
+`visaged` also has to wait for the IR loopback to have a producer. The device
+node exists from the moment `v4l2loopback` loads, but `VIDIOC_G_FMT` on it
+returns EINVAL until the bridge has fed it a frame — and at boot `visaged`
+otherwise wins that race, dies with `streaming not supported`, and the first
+request from the GDM login screen comes back as
+
+    failed to query current format: Invalid argument (os error 22)
+
+`After=` alone does not fix it: for a `Type=simple` unit that only means the
+process was executed, not that the format exists. Wait for the device:
+
+```sh
+sudo install -m 755 tools/surface-ir-wait.sh /usr/local/lib/
+
+sudo tee /etc/systemd/system/visaged.service.d/wait-for-camera.conf <<'EOF'
+[Unit]
+After=surface-ir-camera.service
+Wants=surface-ir-camera.service
+
+[Service]
+ExecStartPre=/usr/local/lib/surface-ir-wait.sh /dev/surface-ir-camera 30
 EOF
 
 sudo systemctl daemon-reload
@@ -204,13 +236,15 @@ sudo -k true          # must still accept your password
 
 ### If it starts refusing you
 
-Liveness detection examines `VISAGE_FRAMES_PER_VERIFY` frames, 3 by
-default, which at ~31 fps is only about 100 ms — not much time for a face
-to move. If you get false rejections, give it more frames:
+If it refuses you at the login screen but works for `sudo`, check the boot
+race above first — `journalctl -b -u visaged` will show `streaming not
+supported` if that is what happened.
 
-```
-Environment=VISAGE_FRAMES_PER_VERIFY=6
-```
+If it refuses you intermittently everywhere, it is usually liveness rather
+than recognition, and the journal says which: a refusal on `displacement`
+is liveness, a refusal on `similarity` is the model. Raising
+`VISAGE_FRAMES_PER_VERIFY` past the 6 above helps the first; re-enrolling
+the model helps the second.
 
 Watch what is actually happening with `sudo journalctl -u visaged -f`
 while authenticating in another terminal. It logs similarity, displacement
