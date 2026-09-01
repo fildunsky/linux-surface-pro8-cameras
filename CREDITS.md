@@ -19,11 +19,14 @@ not improve on it — it only adds the userspace pieces around it.
 [linux-surface#2171](https://github.com/linux-surface/linux-surface/pull/2171)**.
 Without writing register `0x4800` the IPU6 D-PHY never locks and the
 sensor delivers nothing. The value `0x2d` was found by reverse
-engineering the Windows driver. Note the discussion in that thread: two
-people independently bit-swept the register on real hardware (including a
-Surface Pro 8) and found that only bit 5 matters, so the eventual upstream
-form may be `cci_update_bits()` on bit 5 rather than a full register write.
-We carry `0x2d` as in the pull request.
+engineering the Windows driver. The thread went further than that: two
+people independently bit-swept the register on real hardware, including
+this Surface Pro 8, and found that only bit 5 matters. That became a
+series on linux-media which writes `0x20` through the sensor's
+clock-noncontinuous property instead of the full register, and it has now
+been tested on a Pro 7+, a Pro 9 and this Pro 8. We still carry `0x2d`,
+because the series has not landed and our binning work sits on top of the
+downstream driver.
 
 **OV5693 binning on IPU6, INT3472 GPIO type mapping —
 [linux-surface#2252](https://github.com/linux-surface/linux-surface/pull/2252)**.
@@ -87,8 +90,12 @@ it is 8-byte aligned.
   contrast up 40%, saturation up 90%) breaks the colour matrices. Either
   the matrices need re-deriving, or the pedestal has to be applied after
   the matrix rather than before.
-* No sharpening and no lens shading correction exist in libcamera's
-  software ISP at all, so neither can be recovered from the factory
-  calibration for now.
+* No sharpening exists in libcamera's software ISP at all, so it cannot
+  be recovered from the factory calibration.
+* Lens shading correction does not exist there either. The factory tables
+  have been extracted and an implementation written against 0.7.0, but it
+  made the picture worse by eye in the `v4l2-relayd` path and is parked
+  until a daylight flat field settles which plane belongs to which
+  channel.
 * The local sensor drivers for OV5693 and OV13858 have drifted from the
   linux-surface pull requests and should be brought back in line.
