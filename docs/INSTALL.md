@@ -58,6 +58,7 @@ softisp-fix-black-level-order.patch
 softisp-split-awb-from-ccm.patch
 softisp-awb-use-libipa-bayes.patch
 softisp-stats-sums-to-8bit.patch
+softisp-agc-gain-floor.patch
 ```
 
 On Ubuntu, `deb-src` is disabled by default, so enable it first:

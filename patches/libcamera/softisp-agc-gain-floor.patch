@@ -1,0 +1,52 @@
+Description: softisp: stop the AGC below analogue gain 1.0, not below the lowest gain code
+ again10 marks the point where the AGC stops trimming analogue gain and
+ starts trimming exposure. It was initialised with camHelper_->gain(1.0),
+ but gain() converts a gain *code*, so this asked for the gain of code 1 —
+ the very bottom of the sensor's range — rather than a gain of 1.0.
+ .
+ The AGC therefore drove the gain all the way to its minimum before it
+ would shorten exposure. Near the bottom of the range one gain code is a
+ large relative step: on an OV5693 (codes 1..127, helper scale code/16)
+ the AGC settled around 0.33 and a single step moved it by ~19%, far more
+ than the +-0.2 MSV hysteresis band. The loop could never land inside the
+ band and oscillated between steps, which is visible as the picture
+ pulsing in brightness whenever a bright source such as a window is in
+ frame. Exposure, which has thousands of fine steps, was pinned at its
+ maximum the whole time and never used.
+ .
+ With the floor at a gain of 1.0 the AGC reduces gain to unity and then
+ trims exposure, where the steps are fine enough to converge.
+Author: Fil Dunsky
+Bug: measured on a Surface Pro 8, OV5693 front camera, libcamera 0.7.0
+Forwarded: no
+Last-Update: 2026-09-01
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -5,6 +5,7 @@
+  * Simple Software Image Processing Algorithm module
+  */
+ 
++#include <algorithm>
+ #include <chrono>
+ #include <stdint.h>
+ #include <sys/mman.h>
+@@ -227,7 +228,18 @@
+ 	if (camHelper_) {
+ 		context_.configuration.agc.againMin = camHelper_->gain(againMin);
+ 		context_.configuration.agc.againMax = camHelper_->gain(againMax);
+-		context_.configuration.agc.again10 = camHelper_->gain(1.0);
++		/*
++		 * again10 is the analogue gain of 1.0: the point below which
++		 * the AGC stops trimming gain and starts trimming exposure.
++		 * gain() converts a gain *code*, so gain(1.0) returned the
++		 * gain of code 1, that is the very bottom of the sensor's
++		 * range. That let the AGC drive the gain down to its minimum
++		 * before touching exposure, into the region where one code is
++		 * a large relative step, and the loop oscillated there.
++		 */
++		context_.configuration.agc.again10 =
++			std::clamp(1.0, context_.configuration.agc.againMin,
++				   context_.configuration.agc.againMax);
+ 		context_.configuration.agc.againMinStep =
+ 			(context_.configuration.agc.againMax -
+ 			 context_.configuration.agc.againMin) /
