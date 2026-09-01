@@ -18,15 +18,29 @@ sudo dkms install ov5693/1.1-surface-ipu6
 
 and likewise for `driver-ov13858` and `driver-ipu6`.
 
-`driver-ipu6` rebuilds three modules together — `ipu-bridge`,
-`intel-ipu6` and `intel-ipu6-isys`. That is not laziness: `intel_ipu6`
-links against symbols exported by `ipu-bridge`, and with
-`CONFIG_MODVERSIONS` building only the bridge out of tree gives different
-checksums, so the kernel rejects it with `disagrees about version of
-symbol ipu_bridge_init`.
+`driver-ipu6` builds `ipu-bridge` alone. It used to rebuild `intel-ipu6`
+and `intel-ipu6-isys` alongside it, on the belief that a single-module
+out-of-tree build changes the exported checksums under
+`CONFIG_MODVERSIONS`. It does not. Measured on 7.2.2, building the bridge
+by itself exports exactly the stock CRCs — `ipu_bridge_init 0xbb0996a9`,
+`ipu_bridge_instantiate_vcm 0xe53dbf61`, `ipu_bridge_parse_ssdb
+0x8730390b` — because only the `.c` file changes and the signatures live
+in `include/media/ipu-bridge.h`.
+
+The neighbours need rebuilding only when that header itself changes, as in
+the v4 series on linux-media which grows `struct ipu_sensor`. Then
+`intel-ipu6` goes with the bridge. `intel-ipu6-isys` does not even then:
+it imports only `ipu_bridge_instantiate_vcm`, whose CRC does not move.
 
 `intel_ipu6` cannot be unloaded on a live system, so changes to
-`driver-ipu6` only take effect after a reboot.
+`driver-ipu6` only take effect after a reboot. Swapping the bridge module
+on a running system does not work either, and it fails in a way that looks
+like your own patch broke something: `ipu_bridge_init()` returns early
+when the fwnode graph is already present, and the `set_secondary_fwnode()`
+it did on the IPU6 PCI device survives module removal. On reload the
+bridge creates nothing — no `Found supported sensor` lines at all — while
+the sensor drivers probe against the leftovers and read nonsense link
+frequencies. Reboot between builds.
 
 For the IR sensor use [linux-surface/kernel#169](https://github.com/linux-surface/kernel/pull/169)
 directly rather than anything here, and put the firmware from
