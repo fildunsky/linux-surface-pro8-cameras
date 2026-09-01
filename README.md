@@ -234,6 +234,44 @@ grep -v '^#' /etc/pam.d/common-auth
 sudo -k true          # must still accept your password
 ```
 
+### The login keyring will ask for your password
+
+This is not a visage bug and no configuration avoids it: the GNOME login
+keyring is encrypted with a key derived from your password. Typing the
+password at the greeter is what used to unlock it — `pam_gnome_keyring`
+stashes what you typed. Face recognition yields a yes/no, not a password,
+so there is nothing to decrypt with, and you get one or two "Unlock Login
+Keyring" prompts on your desktop right after logging in by face.
+
+Three ways out, in descending order of how much security they keep:
+
+* **Password at the greeter, face for the lock screen and `sudo`.** One
+  password per boot, keyring opens normally, face for everything after.
+* **Live with the prompts.** Nothing is weakened, you type the keyring
+  password once per boot.
+* **Remove the keyring password** (Passwords and Keys → Login → Change
+  Password → leave both fields empty). The prompts stop for good. Weigh
+  this against whether your disk is encrypted: with no full-disk
+  encryption, the keyring was the only thing protecting your saved Wi-Fi
+  and application secrets at rest.
+
+Howdy has exactly the same problem; it is inherent to biometric login.
+
+### Two things worth knowing about visaged
+
+**It opens the camera at startup** to discard warmup frames, then closes it.
+For a `v4l2loopback` setup that is a consumer arriving and leaving within a
+second of boot, which is enough to disturb a producer that is not ready for
+it — it repeatedly killed the bridge here until the bridge was taught to
+survive it. If you write your own producer, handle that.
+
+**Liveness defaults are tuned for slower cameras.** It examines
+`VISAGE_FRAMES_PER_VERIFY` frames, 3 by default; at ~31 fps that is about
+100 ms. Someone sitting still at a login screen does not move far in 100 ms
+— measured here, a correctly recognised face (similarity 0.68) was refused
+on displacement 0.25 against a threshold of 0.8. Hence the 6 in the
+configuration above.
+
 ### If it starts refusing you
 
 If it refuses you at the login screen but works for `sudo`, check the boot
