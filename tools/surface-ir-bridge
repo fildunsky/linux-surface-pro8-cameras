@@ -93,19 +93,52 @@ class Bridge:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.pos = 0          # положение внутри текущего кадра
+        self.restarts = []    # отметки времени перезапусков ffmpeg
+        self._spawn_ffmpeg()
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def _spawn_ffmpeg(self):
         self.ffmpeg = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-f", "rawvideo", "-pix_fmt", "gray10le",
              "-s", f"{STRIDE_PX}x{H}", "-r", str(FPS), "-i", "pipe:0",
              "-vf", f"crop={W}:{H}:0:0",
-             "-f", "v4l2", "-pix_fmt", "yuyv422", dev],
+             "-f", "v4l2", "-pix_fmt", "yuyv422", self.dev],
             stdin=subprocess.PIPE)
         self.out = self.ffmpeg.stdin
-        threading.Thread(target=self.pump, daemon=True).start()
+        self.pos = 0
+
+    def restart_ffmpeg(self):
+        """Поднять ffmpeg на месте, не выходя из процесса.
+
+        Пока мост выходил и ждал перезапуска от systemd, петля на несколько
+        секунд оставалась без поставщика, и VIDIOC_G_FMT на ней отдавал
+        EINVAL. Запрос от экрана входа GDM попадал ровно в это окно и
+        возвращался с "failed to query current format". Своими силами
+        восстановление занимает доли секунды и дыры не оставляет.
+        """
+        now = time.monotonic()
+        self.restarts = [t for t in self.restarts if now - t < 30] + [now]
+        if len(self.restarts) > 5:
+            sys.exit("ffmpeg падает раз за разом, отдаю перезапуск systemd")
+        with self.lock:
+            try:
+                self.out.close()
+            except Exception:
+                pass
+            try:
+                self.ffmpeg.kill()
+                self.ffmpeg.wait(timeout=5)
+            except Exception:
+                pass
+            self._spawn_ffmpeg()
+        print("ИК: ffmpeg перезапущен на месте", flush=True)
 
     def _write(self, data):
         """Записать и запомнить положение внутри кадра."""
-        self.out.write(data)
+        with self.lock:
+            out = self.out
+        out.write(data)
         self.pos = (self.pos + len(data)) % FRAME
 
     def _align(self):
@@ -133,8 +166,9 @@ class Bridge:
                     self._align()
                     self._write(BLACK)
                     self.out.flush()
-                except (BrokenPipeError, ValueError):
-                    return
+                except (BrokenPipeError, ValueError, OSError):
+                    time.sleep(0.2)
+                    continue
                 time.sleep(1.0 / IDLE_FPS)
                 continue
             chunk = cam.stdout.read(65536)
@@ -145,13 +179,15 @@ class Bridge:
                         self.camera = None
                 try:
                     self._align()
-                except (BrokenPipeError, ValueError):
-                    return
+                except (BrokenPipeError, ValueError, OSError):
+                    time.sleep(0.2)
+                    continue
                 continue
             try:
                 self._write(chunk)
-            except (BrokenPipeError, ValueError):
-                return
+            except (BrokenPipeError, ValueError, OSError):
+                time.sleep(0.2)
+                continue
 
     def start_camera(self):
         with self.lock:
@@ -216,9 +252,12 @@ def main():
     poller = select.poll()
     poller.register(fd, select.POLLPRI)
     while True:
-        if not poller.poll(2000):
+        # Полсекунды, а не две: этим таймаутом ограничено время, за которое
+        # мы заметим упавший ffmpeg, а пока он лежит, петля стоит без
+        # поставщика и отдаёт EINVAL на запрос формата.
+        if not poller.poll(500):
             if bridge.ffmpeg.poll() is not None:
-                sys.exit("ffmpeg завершился, перезапуск через systemd")
+                bridge.restart_ffmpeg()
             continue
         buf = bytearray(136)
         try:
