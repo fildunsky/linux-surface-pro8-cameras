@@ -2,7 +2,8 @@
 
 All three cameras of the Microsoft Surface Pro 8 working on mainline Linux:
 front (OV5693), rear (OV13858) and the infrared Windows Hello camera
-(ST VD55G0). Tested on Ubuntu 26.04 with kernel 6.19.8-surface-3.
+(ST VD55G0). Tested on Ubuntu 26.04 with kernels 6.19.8-surface-3 and
+7.2.2-surface-1.
 
 | camera | sensor | ACPI id | CSI-2 port | status |
 |---|---|---|---|---|
@@ -64,8 +65,13 @@ patches/libcamera/ patches against libcamera 0.7.0
 tuning/            libcamera tuning files for the software ISP
 relayd/            v4l2-relayd notes and patch
 tools/             bring-up, measurement and tuning tools
-docs/              detailed engineering notes (Russian)
+docs/              detailed engineering notes
 ```
+
+If you are on kernel 7.x, read `docs/KERNEL-7x.md` first. Everything works
+there, but four things change on the way from 6.19 — a signing key that
+cannot sign a kernel, `/dev/videoN` numbers that move, a changed LED
+structure in int3472, and one package that looks redundant and is not.
 
 `docs/NOTES.ru.md` and `docs/NOTES-ir.ru.md` are the full lab notebooks in
 Russian. They are much more detailed than this README, including every
