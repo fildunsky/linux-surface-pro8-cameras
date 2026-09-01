@@ -77,7 +77,7 @@ sudo apt-get build-dep -y libcamera
 
 cd libcamera-0.7.0
 cp ../../patches/libcamera/softisp-*.patch debian/patches/
-# append the five names above to debian/patches/series, in that order
+# append the six names above to debian/patches/series, in that order
 dpkg-buildpackage -b -uc -us -j"$(nproc)"
 
 cd ..
@@ -86,13 +86,39 @@ sudo dpkg -i libcamera0.7_*_amd64.deb libcamera-ipa_*_amd64.deb \
 sudo apt-mark hold libcamera0.7 libcamera-ipa gstreamer1.0-libcamera
 ```
 
-Two things that will bite you:
+Three things that will bite you:
 
 * `libcamera0.7` and `libcamera-ipa` must be installed **together**. IPA
   modules are signed with a key generated at build time and libcamera
   verifies the signature, so a mismatched pair silently refuses to load.
 * `apt-mark hold` is not optional. The next distribution update will
   otherwise replace your build and bring all the defects back.
+* Install the dma-buf rule below, or the camera will be missing from
+  applications after most boots.
+
+```sh
+sudo install -m644 tools/70-dma-heap-video.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger -s dma_heap
+```
+
+The software ISP needs a dma-buf provider. The only one a normal user can
+reach out of the box is `/dev/udmabuf`, and only through the logind
+`uaccess` ACL, which is applied when the session becomes active and races
+with the user's own PipeWire starting. Lose that race — which on this
+machine happens on most boots — and libcamera prints
+
+```
+SoftwareIsp: Failed to create DmaBufAllocator object
+SimplePipeline: Failed to create software ISP, disabling software debayering
+```
+
+once, then serves Bayer-only formats for the entire life of the process.
+PipeWire's libcamera plugin cannot use raw Bayer, so both colour cameras
+advertise zero formats and applications report that no camera is present.
+The IR camera is unaffected because GRAY8 needs no debayering, which is
+why face unlock keeps working while the Camera app finds nothing. The
+`dma_heap` provider does not depend on a session, so the rule removes the
+race entirely.
 
 ## 3. Tuning files
 

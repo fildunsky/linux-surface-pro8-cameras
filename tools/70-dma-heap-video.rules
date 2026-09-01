@@ -1,0 +1,9 @@
+# Программному ISP libcamera нужен поставщик dma-buf. Единственный доступный
+# пользователю — /dev/udmabuf, и только через ACL от logind, который ставится
+# при активации сессии и гонится со стартом пользовательского pipewire. Кто
+# проиграл гонку, тот на всю жизнь процесса получает
+#   SoftwareIsp: Failed to create DmaBufAllocator object
+#   SimplePipeline: Failed to create software ISP, disabling software debayering
+# после чего байеровские камеры не отдают ни одного формата и приложения
+# говорят «камера не найдена». dma_heap от сессии не зависит.
+SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
