@@ -271,10 +271,41 @@ Three ways out, in descending order of how much security they keep:
 * **Live with the prompts.** Nothing is weakened, you type the keyring
   password once per boot.
 * **Remove the keyring password** (Passwords and Keys → Login → Change
-  Password → leave both fields empty). The prompts stop for good. Weigh
-  this against whether your disk is encrypted: with no full-disk
-  encryption, the keyring was the only thing protecting your saved Wi-Fi
-  and application secrets at rest.
+  Password → leave both fields empty). Weigh this against whether your
+  disk is encrypted: with no full-disk encryption, the keyring was the
+  only thing protecting your saved Wi-Fi and application secrets at rest.
+
+Three things about removing it, all learned the hard way here.
+
+Seahorse asks a second time, in a separate dialog, whether to store the
+secrets unencrypted. Dismiss that one and nothing changes, and nothing in
+the interface says so.
+
+Check the file rather than the interface, and rather than the absence of
+prompts:
+
+```sh
+head -c 12 ~/.local/share/keyrings/login.keyring
+# [keyring]     -> no password, stored as plain text
+# GnomeKeyring  -> still encrypted, a password is set
+```
+
+The journal is the other witness, but read it carefully. At login you get
+either `gkr-pam: unlocked login keyring` or `gkr-pam: couldn't unlock the
+login keyring`, and the first one proves nothing if `gkr-pam: stashed
+password to try later` sits next to it — that means you logged in by
+password, so of course it opened. Only a login by face is diagnostic. The
+absence of prompts proves nothing either: `couldn't prompt for password:
+The operation was cancelled` is logged only when a dialog was dismissed, so
+a boot where nothing asked and a boot where you ignored the dialog look
+identical.
+
+And it does not necessarily stay removed. Verified gone here on one
+morning and encrypted again by the same evening — a freshly written file,
+not a restored backup. The single login in between was by password rather
+than by face, which makes `pam_gnome_keyring` stashing that password the
+obvious suspect, but that is a suspicion and not a measurement. If the
+prompts come back, look at the file before concluding you imagined it.
 
 Howdy has exactly the same problem; it is inherent to biometric login.
 
@@ -340,3 +371,6 @@ linux-surface threads:
   colour quality and the software ISP statistics bug
 * [#2153](https://github.com/linux-surface/linux-surface/issues/2153) —
   IPU6 reverse engineering across Surface models
+* [linux-media](https://lore.kernel.org/linux-media/20260902142322.73523-1-fernandorimoli11@gmail.com/)
+  — the OV5693-on-IPU6 work itself, now a seven-patch series at v5;
+  `Tested-by` from this machine on patches 4 to 7

@@ -22,11 +22,17 @@ sensor delivers nothing. The value `0x2d` was found by reverse
 engineering the Windows driver. The thread went further than that: two
 people independently bit-swept the register on real hardware, including
 this Surface Pro 8, and found that only bit 5 matters. That became a
-series on linux-media which writes `0x20` through the sensor's
-clock-noncontinuous property instead of the full register, and it has now
-been tested on a Pro 7+, a Pro 9 and this Pro 8. We still carry `0x2d`,
+[series on linux-media](https://lore.kernel.org/linux-media/20260902142322.73523-1-fernandorimoli11@gmail.com/)
+which writes `0x20` through the sensor's clock-noncontinuous property
+instead of the full register. At v5 it is seven patches, measured by four
+people on five machines — a Pro 9, two Pro 7+, a Go 4 and this Pro 8,
+covering Tiger Lake, Alder Lake-P and Alder Lake-N. We still carry `0x2d`,
 because the series has not landed and our binning work sits on top of the
 downstream driver.
+
+If you verify it yourself, capture twice. On this machine the first
+capture after a cold boot succeeds even without the fix, so a single
+capture after a reboot cannot tell you whether it is present.
 
 **OV5693 binning on IPU6, INT3472 GPIO type mapping —
 [linux-surface#2252](https://github.com/linux-surface/linux-surface/pull/2252)**.
