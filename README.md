@@ -332,12 +332,38 @@ re-encrypts the login keyring with it. So the removal survives any number
 of logins by face and dies on the first login by password — which is
 exactly the one you fall back to when face recognition has a bad day.
 
-If that matters to you, comment out that one line in
-`/etc/pam.d/gdm-password`; leave `session optional pam_gnome_keyring.so
-auto_start` alone, so the daemon still starts and still opens a
-passwordless keyring by itself. The cost is that if a password ever gets
-set on the keyring again, a login by password will no longer unlock it
-silently.
+It can be switched off. Back the file up first, because it belongs to the
+`gdm3` package and a package update will ask which version you want to
+keep:
+
+```sh
+sudo cp /etc/pam.d/gdm-password /etc/pam.d/gdm-password.bak
+sudoedit /etc/pam.d/gdm-password
+```
+
+Comment out that one line, and only that one:
+
+```
+# auth    optional        pam_gnome_keyring.so
+```
+
+Leave `session optional pam_gnome_keyring.so auto_start` further down
+alone — the daemon still has to start, and it opens a passwordless keyring
+by itself. Then remove the keyring password, log out, log back in *by
+password*, and check that the file still begins with `[keyring]`. Verified
+here: it does, and `gkr-pam: stashed password to try later` disappears from
+the journal entirely. To undo it, put the backup back.
+
+**This is a finding, not a recommendation.** Doing it takes off two things
+at once: the keyring is no longer encrypted at rest, and the one mechanism
+that would ever put its password back is disabled. On a machine without
+full disk encryption, anyone who can read your home directory can then
+read every saved Wi-Fi password, mail password and application token in
+it. It was worked out here to explain a specific behaviour — why a removal
+that verifies as done comes back hours later — and it is written down for
+that reason. If all you want is for the prompts to stop, the first option
+in this list costs nothing and gives up nothing: type your password at the
+greeter once per boot, and use your face for the lock screen and `sudo`.
 
 Howdy has exactly the same problem; it is inherent to biometric login.
 
