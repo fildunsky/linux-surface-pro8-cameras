@@ -290,22 +290,42 @@ head -c 12 ~/.local/share/keyrings/login.keyring
 # GnomeKeyring  -> still encrypted, a password is set
 ```
 
-The journal is the other witness, but read it carefully. At login you get
-either `gkr-pam: unlocked login keyring` or `gkr-pam: couldn't unlock the
-login keyring`, and the first one proves nothing if `gkr-pam: stashed
-password to try later` sits next to it — that means you logged in by
-password, so of course it opened. Only a login by face is diagnostic. The
-absence of prompts proves nothing either: `couldn't prompt for password:
-The operation was cancelled` is logged only when a dialog was dismissed, so
-a boot where nothing asked and a boot where you ignored the dialog look
-identical.
+Do not use `gkr-pam`'s own line in the journal as the witness. It reports
+what the PAM module managed to do, not what became of the keyring.
+Measured here on a keyring with no password at all, a login by face logs
+
+```
+pam_visage: face matched for user 'do'
+pam_visage: gkr-pam: couldn't unlock the login keyring.
+```
+
+and yet no dialog appears and the keyring ends up open: `gkr-pam` is saying
+it had no password to offer, and the daemon then opens a passwordless
+keyring by itself. The opposite line, `gkr-pam: unlocked login keyring`,
+says just as little when `gkr-pam: stashed password to try later` sits next
+to it — that means you logged in by password, so of course it opened.
+
+What does answer the question, in a running session:
+
+```sh
+busctl --user get-property org.freedesktop.secrets \
+    /org/freedesktop/secrets/collection/login \
+    org.freedesktop.Secret.Collection Locked
+```
+
+`couldn't prompt for password: The operation was cancelled` in the journal
+does tell you a dialog was raised and dismissed. Its absence tells you
+nothing, since it is equally absent when a dialog was raised and answered.
 
 And it does not necessarily stay removed. Verified gone here on one
 morning and encrypted again by the same evening — a freshly written file,
 not a restored backup. The single login in between was by password rather
 than by face, which makes `pam_gnome_keyring` stashing that password the
-obvious suspect, but that is a suspicion and not a measurement. If the
-prompts come back, look at the file before concluding you imagined it.
+obvious suspect, but that is a suspicion and not a measurement. Removed
+again that same evening, it then survived a reboot and a login by face
+with no prompts — consistent with the suspicion, and still not proof of
+it. If the prompts come back, look at the file before concluding you
+imagined it.
 
 Howdy has exactly the same problem; it is inherent to biometric login.
 
