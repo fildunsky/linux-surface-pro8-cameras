@@ -317,15 +317,27 @@ busctl --user get-property org.freedesktop.secrets \
 does tell you a dialog was raised and dismissed. Its absence tells you
 nothing, since it is equally absent when a dialog was raised and answered.
 
-And it does not necessarily stay removed. Verified gone here on one
-morning and encrypted again by the same evening — a freshly written file,
-not a restored backup. The single login in between was by password rather
-than by face, which makes `pam_gnome_keyring` stashing that password the
-obvious suspect, but that is a suspicion and not a measurement. Removed
-again that same evening, it then survived a reboot and a login by face
-with no prompts — consistent with the suspicion, and still not proof of
-it. If the prompts come back, look at the file before concluding you
-imagined it.
+And it does not stay removed if you ever log in by password again. This is
+what puts it back, timed here:
+
+```
+07:19:08  login by face      31203 bytes, [keyring]
+07:26:08  login by password  gkr-pam: stashed password to try later in open session
+07:26:20  twelve seconds on  35485 bytes, GnomeKeyring
+```
+
+Nothing else happened in between. `auth optional pam_gnome_keyring.so`
+stashes the password you typed at the greeter, and the session stage then
+re-encrypts the login keyring with it. So the removal survives any number
+of logins by face and dies on the first login by password — which is
+exactly the one you fall back to when face recognition has a bad day.
+
+If that matters to you, comment out that one line in
+`/etc/pam.d/gdm-password`; leave `session optional pam_gnome_keyring.so
+auto_start` alone, so the daemon still starts and still opens a
+passwordless keyring by itself. The cost is that if a password ever gets
+set on the keyring again, a login by password will no longer unlock it
+silently.
 
 Howdy has exactly the same problem; it is inherent to biometric login.
 
