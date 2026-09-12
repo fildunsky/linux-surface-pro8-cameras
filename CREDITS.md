@@ -19,9 +19,11 @@ not improve on it — it only adds the userspace pieces around it.
 [linux-surface#2171](https://github.com/linux-surface/linux-surface/pull/2171)**.
 Without writing register `0x4800` the IPU6 D-PHY never locks and the
 sensor delivers nothing. The value `0x2d` was found by reverse
-engineering the Windows driver. The thread went further than that: two
-people independently bit-swept the register on real hardware, including
-this Surface Pro 8, and found that only bit 5 matters. That became a
+engineering the Windows driver. The thread went further than that:
+femito1 and Zann580 independently bit-swept the register on real
+hardware — a Pro 9 and a Surface Pro 8 that is not this one — and found
+that only bit 5 matters. None of that sweep was done here; this machine
+contributed a `Tested-by` and the negative control below. That became a
 [series on linux-media](https://lore.kernel.org/linux-media/20260902142322.73523-1-fernandorimoli11@gmail.com/)
 which writes `0x20` through the sensor's clock-noncontinuous property
 instead of the full register. At v5 it is seven patches, measured by four
