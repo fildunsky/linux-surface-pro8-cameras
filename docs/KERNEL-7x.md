@@ -4,9 +4,9 @@ Everything here also works on mainline 7.x. This page records the four things
 that broke on the way from 6.19 to 7.2, because none of them announce
 themselves clearly and three of them look like camera bugs when they are not.
 
-Tested on Ubuntu 26.04 with a self-built `7.2.2-surface-1`: vanilla 7.2.2 plus
-the linux-surface patch series, all three cameras, touch, pen and face
-authentication working.
+Tested on Ubuntu 26.04 with self-built `7.2.2-surface-1` and
+`7.2.8-surface-1`: vanilla stable plus the linux-surface patch series, all
+three cameras, touch, pen and face authentication working.
 
 ## Getting a 7.x kernel at all
 
@@ -29,6 +29,23 @@ the base, merged with `pkg/debian/kernel/ubuntu.config` and
 `DEBUG_INFO_NONE`, without debug info there is no `GENDWARFKSYMS`, and with
 `MODVERSIONS` on Kconfig then does not offer `RUST` at all. linux-surface's own
 kernels are built the same way.
+
+### Moving to a later 7.2.x
+
+Going from 7.2.2 to 7.2.8 took one conflict. 7.2.4 added
+`BTUSB_BROKEN_EXT_SCAN` to `drivers/bluetooth/btusb.c` as `BIT(29)`, which is
+the bit linux-surface's Marvell 88W8897 patch ("Lower passive lescan interval")
+uses for `BTUSB_LOWER_LESCAN_INTERVAL`. Keep both and move the Marvell flag to
+`BIT(30)` — the same resolution as the 7.2.4 rebase in
+[#2233](https://github.com/linux-surface/linux-surface/pull/2233). The other
+43 patches rebase cleanly, and the 7.2.2 config needs no new answers.
+
+If you ran `make clean` since the last build, the next build generates a new
+module signing key (`certs/signing_key.pem`) and the old one is gone. Modules of
+the previous kernel keep working, but you can no longer sign a hand-built module
+for it with that key. Copy the key somewhere before rebuilding if you might.
+
+All seven DKMS packages in this repository build against 7.2.8 without changes.
 
 ## 1. The DKMS signing key cannot sign a kernel
 

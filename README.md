@@ -2,8 +2,8 @@
 
 All three cameras of the Microsoft Surface Pro 8 working on mainline Linux:
 front (OV5693), rear (OV13858) and the infrared Windows Hello camera
-(ST VD55G0). Tested on Ubuntu 26.04 with kernels 6.19.8-surface-3 and
-7.2.2-surface-1.
+(ST VD55G0). Tested on Ubuntu 26.04 with kernels 6.19.8-surface-3,
+7.2.2-surface-1 and 7.2.8-surface-1.
 
 | camera | sensor | ACPI id | CSI-2 port | status |
 |---|---|---|---|---|
