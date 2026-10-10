@@ -642,8 +642,27 @@ PipeWire не знает вовсе; у Chrome флаг `enable-webrtc-pipewire-
 /etc/modprobe.d/v4l2-relayd.conf           два устройства, метки, video_nr
 /etc/systemd/system/v4l2-relayd@surface-{front,rear}.service.d/
     dmabuf.conf                            доступ к dma-buf
-    sync.conf                              отключение порога опоздания
+    sink.conf                              sync=false у v4l2sink, лимит очереди appsrc
+    memory.conf                            MemoryMax=1536M
 ```
+
+> **Обновление 10.10.2026.** Ниже описана первая рабочая версия (дроп-ин
+> `sync.conf` с `max-lateness=-1`, заставка из одного кадра). На машине она с
+> 30.08 заменена: `v4l2sink sync=false` в `sink.conf` и живая заставка
+> `videotestsrc is-live=true` в `/etc/v4l2-relayd.d/*.conf` — причины записаны
+> в комментариях этих файлов. Исправленный бинарь из `relayd/` не используется,
+> работает пакетный `/usr/bin/v4l2-relayd`.
+>
+> **Лимит очереди appsrc обязателен.** Выходной `appsrc` relayd создаёт без
+> ограничений, и при `block=false` он принимает буферы сверх `max-bytes`. Если
+> выход хоть ненадолго отстаёт от входа, кадры по 1,8 МБ копятся без предела.
+> 10.10.2026 под общей нехваткой памяти оба процесса раздуло с 0,8 до 5 ГБ за
+> ~15 с, OOM убил браузер, мессенджер и заднюю камеру (тот же сценарий —
+> Launchpad #1998579). Правка в `sink.conf`: `appsrc name=appsrc max-buffers=2
+> max-bytes=0 leaky-type=downstream ...` — держать два кадра и выбрасывать
+> старые; плюс `MemoryMax`, чтобы при любом другом раздувании OOM убивал только
+> службу (`Restart=always` её поднимет). Скрипт —
+> `LinuxSurface8Camera/tools/relayd-memory-fix.sh` (в рабочей папке).
 
 Все файлы подробно закомментированы — там же записаны причины каждой строки.
 Ниже коротко о том, без чего не работает.
