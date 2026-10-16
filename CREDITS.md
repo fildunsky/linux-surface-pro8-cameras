@@ -28,9 +28,10 @@ contributed a `Tested-by` and the negative control below. That became a
 which writes `0x20` through the sensor's clock-noncontinuous property
 instead of the full register. At v5 it is seven patches, measured by four
 people on five machines — a Pro 9, two Pro 7+, a Go 4 and this Pro 8,
-covering Tiger Lake, Alder Lake-P and Alder Lake-N. We still carry `0x2d`,
-because the series has not landed and our binning work sits on top of the
-downstream driver.
+covering Tiger Lake, Alder Lake-P and Alder Lake-N. All seven patches were
+accepted into the media tree in September 2026, so they should reach mainline
+in a coming release. We still carry `0x2d` until a kernel we run includes them,
+because our binning work sits on top of the downstream driver.
 
 If you verify it yourself, capture twice. On this machine the first
 capture after a cold boot succeeds even without the fix, so a single

@@ -45,10 +45,17 @@
 /* Chip ID */
 #define OV13858_REG_CHIP_ID		0x300a
 
-/* Флип и смещение окна кадрирования (см. ov13b10 в mainline) */
+/*
+ * Флип. Окно кадрирования (0x3811/0x3813) при флипе НЕ сдвигаем: в отличие
+ * от ov13b10 в mainline, на этом модуле флип байеровский порядок не меняет,
+ * и сдвиг окна переставляет красный с синим.
+ */
 #define OV13858_REG_FORMAT1		0x3820
-#define OV13858_REG_H_WIN_OFFSET	0x3811
-#define OV13858_REG_V_WIN_OFFSET	0x3813
+
+/* Целевой уровень чёрного, 16 бит. Заводское значение 0x0040. */
+#define OV13858_REG_BLC_TARGET		0x4002
+#define OV13858_FORMAT1_HFLIP		BIT(3)
+#define OV13858_FORMAT1_VFLIP		(BIT(4) | BIT(5))
 #define OV13858_CHIP_ID			0x00d855
 
 /* V_TIMING internal */
@@ -1043,6 +1050,22 @@ static const struct ov13858_mode supported_modes[] = {
 	}
 };
 
+static bool subsampled_modes;
+module_param(subsampled_modes, bool, 0444);
+MODULE_PARM_DESC(subsampled_modes,
+	"Also offer the subsampled sensor modes (2112x1568, 2112x1188, 1056x784). "
+	"They are softer than full readout: horizontally the sensor skips every "
+	"other column. Off by default.");
+
+/*
+ * Полный кадр стоит в таблице первым, поэтому «только полное чтение» — это
+ * просто длина таблицы, равная единице.
+ */
+static unsigned int ov13858_num_modes(void)
+{
+	return subsampled_modes ? ARRAY_SIZE(supported_modes) : 1;
+}
+
 struct ov13858 {
 	struct device *dev;
 	struct clk *clk;
@@ -1347,27 +1370,11 @@ static int ov13858_set_ctrl_hflip(struct ov13858 *ov13858, u32 ctrl_val)
 	if (ret)
 		return ret;
 
-	ret = ov13858_write_reg(ov13858, OV13858_REG_FORMAT1,
-				OV13858_REG_VALUE_08BIT,
-				ctrl_val ? val & ~BIT(3) : val | BIT(3));
-	if (ret)
-		return ret;
-
-	ret = ov13858_read_reg(ov13858, OV13858_REG_H_WIN_OFFSET,
-			       OV13858_REG_VALUE_08BIT, &val);
-	if (ret)
-		return ret;
-
-	/*
-	 * Зеркалирование сдвигает байеровский порядок; смещение окна на один
-	 * пиксель возвращает его обратно, поэтому mbus-код остаётся один.
-	 * Значение читается из регистра, который только что выставил список
-	 * режима, — сюда приходят один раз за старт потока, из
-	 * __v4l2_ctrl_handler_setup().
-	 */
-	return ov13858_write_reg(ov13858, OV13858_REG_H_WIN_OFFSET,
+	/* Сброшенный бит 3 включает зеркало. */
+	return ov13858_write_reg(ov13858, OV13858_REG_FORMAT1,
 				 OV13858_REG_VALUE_08BIT,
-				 ctrl_val ? val + 1 : val);
+				 ctrl_val ? val & ~OV13858_FORMAT1_HFLIP
+					  : val | OV13858_FORMAT1_HFLIP);
 }
 
 static int ov13858_set_ctrl_vflip(struct ov13858 *ov13858, u32 ctrl_val)
@@ -1380,23 +1387,16 @@ static int ov13858_set_ctrl_vflip(struct ov13858 *ov13858, u32 ctrl_val)
 	if (ret)
 		return ret;
 
-	ret = ov13858_write_reg(ov13858, OV13858_REG_FORMAT1,
-				OV13858_REG_VALUE_08BIT,
-				ctrl_val ? val | BIT(4) | BIT(5)
-					 : val & ~(BIT(4) | BIT(5)));
-	if (ret)
-		return ret;
-
-	ret = ov13858_read_reg(ov13858, OV13858_REG_V_WIN_OFFSET,
-			       OV13858_REG_VALUE_08BIT, &val);
-	if (ret)
-		return ret;
-
-	/* см. пояснение в ov13858_set_ctrl_hflip() */
-	return ov13858_write_reg(ov13858, OV13858_REG_V_WIN_OFFSET,
+	/*
+	 * Бит 4 включает переворот. Бит 5 уже поднят самими списками режимов
+	 * (0xa8, 0xab, 0xac), гасить его нельзя — это настройка режима.
+	 */
+	return ov13858_write_reg(ov13858, OV13858_REG_FORMAT1,
 				 OV13858_REG_VALUE_08BIT,
-				 ctrl_val ? val - 1 : val);
+				 ctrl_val ? val | OV13858_FORMAT1_VFLIP
+					  : val & ~BIT(4));
 }
+
 
 static int ov13858_set_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -1486,7 +1486,7 @@ static int ov13858_enum_frame_size(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(supported_modes))
+	if (fse->index >= ov13858_num_modes())
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
@@ -1560,7 +1560,7 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 		fmt->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
 
 	mode = v4l2_find_nearest_size(supported_modes,
-				      ARRAY_SIZE(supported_modes),
+				      ov13858_num_modes(),
 				      width, height,
 				      fmt->format.width, fmt->format.height);
 	ov13858_update_pad_format(mode, fmt);
@@ -1632,6 +1632,20 @@ static int ov13858_start_streaming(struct ov13858 *ov13858)
 	ret = ov13858_write_reg_list(ov13858, reg_list);
 	if (ret) {
 		dev_err(ov13858->dev, "%s failed to set mode\n", __func__);
+		return ret;
+	}
+
+	/*
+	 * Убираем заводской пьедестал чёрного (0x0040 из 1024): программный ISP
+	 * libcamera вычитает его из сумм для серого мира в другом масштабе,
+	 * чем из самой картинки, и промахивается по балансу белого тем сильнее,
+	 * чем темнее сцена. С нулём обе стороны сходятся. Тюнинг при этом обязан
+	 * объявлять blackLevel: 0.
+	 */
+	ret = ov13858_write_reg(ov13858, OV13858_REG_BLC_TARGET,
+				OV13858_REG_VALUE_16BIT, 0);
+	if (ret) {
+		dev_err(ov13858->dev, "%s failed to zero black level\n", __func__);
 		return ret;
 	}
 
